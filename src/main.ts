@@ -36,6 +36,9 @@ let lastTranscript = ''
 let suggestions: string[] = []
 let proactiveActive = false // true when user just ring-tapped for topics
 let mockTimer: number | null = null
+// Repainting timer that lets the diagnostic stats line refresh while
+// mic is on but no transcripts are flowing yet (early frames-flow check).
+let realStatsTimer: number | null = null
 
 // Honest cadence for v0.1.0 mock mode. v0.2.0+ replaces the timer with
 // real STT-driven triggers (silence detection, partial-transcript pulses).
@@ -205,6 +208,19 @@ function renderGlasses(): string {
   } else {
     lines.push(proactiveActive ? 'Fresh topics:' : 'Listening…')
   }
+  // Diagnostic stats — only shown in real mode while micOn. Lets the
+  // operator see whether audio frames are flowing from the SDK to the
+  // transport, and whether chunks are reaching the worker. If frames=0
+  // after several seconds of speech, the SDK isn't emitting audioPcm
+  // events; if frames>0 but chunks=0 or chunks-ok=0, the issue is
+  // worker-side.
+  if (isRealMode && transport) {
+    const s = transport.stats()
+    lines.push(`audio frames=${s.framesReceived} chunks=${s.chunksFlushed}/${s.chunksOk}ok`)
+    if (s.lastError) {
+      lines.push(`err: ${s.lastError}`)
+    }
+  }
   lines.push('')
   lines.push('—'.repeat(20))
   if (suggestions.length > 0) {
@@ -285,6 +301,10 @@ async function toggleMic(): Promise<void> {
     }
   } else {
     stopMockTimer()
+    if (realStatsTimer !== null) {
+      window.clearInterval(realStatsTimer)
+      realStatsTimer = null
+    }
     if (transport) await transport.endMicSession()
     if (even) await even.stopMic()
   }
@@ -297,25 +317,30 @@ async function startRealSession(): Promise<void> {
   if (!transport || !even) return
   liveTranscript = ''
   lastSuggestionAt = 0
+  // Transport now uses chunked HTTP POST instead of WebSocket (the WebView
+  // blocks outbound WS handshakes — see transport.ts header comment).
+  // startMicSession throws on worker-unreachable / probe-failed; per-chunk
+  // network blips during the session come back via the onError callback.
   try {
     await transport.startMicSession(onTranscriptFrame, msg => {
-      // Connection error — surface as a visible message and fall back
-      // to mock so the user still gets something.
-      lastTranscript = `(transport: ${msg})`
-      isRealMode = false
-      resetMock()
-      startMockTimer()
-      void paint()
+      // Per-chunk transport error mid-session. Log but don't kill the
+      // session; the next chunk still has a chance.
+      // eslint-disable-next-line no-console
+      console.warn('[cue] transcribe error:', msg)
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    lastTranscript = `(WS open failed: ${msg.slice(0, 40)})`
+    lastTranscript = `(real-mode unavailable: ${msg.slice(0, 80)})`
+    // eslint-disable-next-line no-console
+    console.error('[cue] real-mode startMicSession failed:', msg)
     isRealMode = false
     resetMock()
     startMockTimer()
+    await paint()
     return
   }
-  // Now ask the SDK to start the mic. PCM frames flow into onAudioFrame.
+  // Ask the SDK to start the mic. PCM frames flow into transport via
+  // sendAudioFrame; transport buffers and POSTs every CHUNK_MS.
   const ok = await even.startMic(frame => {
     transport?.sendAudioFrame(frame)
   })
@@ -325,7 +350,17 @@ async function startRealSession(): Promise<void> {
     await transport.endMicSession()
     resetMock()
     startMockTimer()
+    await paint()
+    return
   }
+  lastTranscript = '(listening — say something)'
+  // Repaint every 1.5s while real-mode mic is on so the diagnostic stats
+  // line (audio frames=N chunks=X/Yok) updates even if no transcript
+  // event has fired yet. Cleared when mic stops.
+  if (realStatsTimer === null) {
+    realStatsTimer = window.setInterval(() => { void paint() }, 1500)
+  }
+  await paint()
 }
 
 function onTranscriptFrame(e: TranscriptEvent): void {
@@ -440,6 +475,9 @@ saveWorkerBtn.addEventListener('click', async () => {
     ? 'Saved. Real STT + LLM active on next mic session.'
     : 'Saved (URL + token incomplete — mock mode will run).'
   window.setTimeout(() => { workerStatus.textContent = '' }, 4000)
+  // Force an immediate glasses repaint so the ◉ live / ◌ mock indicator
+  // reflects the new state without waiting for the next user gesture.
+  void paint()
 })
 
 // --- bootstrap ---

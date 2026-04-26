@@ -15,6 +15,10 @@ dist-ssr
 # Even Hub package output
 *.ehpk
 
+# Cached portal session for scripts/deploy-portal.mjs — keeps cookies so we
+# don't have to log in on every upload. NEVER commit this file.
+.even-portal-session.json
+
 # Regression test screenshots — regenerated each run
 tests/screenshots-regression/
 
@@ -28,3 +32,4 @@ tests/screenshots-regression/
 *.njsproj
 *.sln
 *.sw?
+worker-template/.dev.vars

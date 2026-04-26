@@ -2,7 +2,7 @@
   "package_id": "com.philtullai.cue",
   "edition": "202601",
   "name": "Cue",
-  "version": "0.2.0",
+  "version": "0.2.5",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
@@ -13,9 +13,10 @@
     },
     {
       "name": "network",
-      "desc": "Sends audio + transcript context to your personal Cloudflare Worker (which proxies to Deepgram and your chosen LLM). Worker URL is set in phone-side settings. Replace the whitelist entry below with your own deployed Worker URL before running `npm run pack`.",
+      "desc": "Sends audio + transcript context to the personal Cloudflare Worker (which proxies to Deepgram and OpenAI). Worker URL is configured in phone-side settings; the host below is the deployed cue-worker that the .ehpk is allowed to talk to.",
       "whitelist": [
-        "https://your-cue-worker.example.workers.dev"
+        "https://cue-worker.tullaipsu.workers.dev",
+        "wss://cue-worker.tullaipsu.workers.dev"
       ]
     }
   ],

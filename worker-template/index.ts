@@ -28,7 +28,83 @@ interface Env {
   OPENAI_API_KEY?: string
 }
 
-const DEEPGRAM_WS = 'wss://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&encoding=linear16&sample_rate=16000&channels=1'
+// IMPORTANT: must be https:// not wss:// — Cloudflare Workers' fetch() only
+// accepts http(s) schemes for outbound WebSocket negotiation. The Upgrade
+// header on the request handles the protocol switch. Using wss:// here
+// produces a runtime TypeError ("Fetch API cannot load: wss://...") that
+// returns HTTP 500 to the client.
+const DEEPGRAM_WS = 'https://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&encoding=linear16&sample_rate=16000&channels=1'
+// Batch (HTTP) Deepgram endpoint used by /transcribe — same model, no
+// interim results since each call gets one chunk.
+const DEEPGRAM_HTTP = 'https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true'
+
+const SAMPLE_RATE = 16000
+
+// WAV-wrap raw PCM16 mono so Deepgram's HTTP endpoint (which sniffs the
+// container) accepts it. Same shape used by typical clients.
+function wavWrap(pcm: Uint8Array): Uint8Array {
+  const numChannels = 1
+  const bitsPerSample = 16
+  const byteRate = SAMPLE_RATE * numChannels * (bitsPerSample / 8)
+  const blockAlign = numChannels * (bitsPerSample / 8)
+  const dataSize = pcm.byteLength
+  const buffer = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buffer)
+  view.setUint8(0, 0x52); view.setUint8(1, 0x49); view.setUint8(2, 0x46); view.setUint8(3, 0x46) // "RIFF"
+  view.setUint32(4, 36 + dataSize, true)
+  view.setUint8(8, 0x57); view.setUint8(9, 0x41); view.setUint8(10, 0x56); view.setUint8(11, 0x45) // "WAVE"
+  view.setUint8(12, 0x66); view.setUint8(13, 0x6d); view.setUint8(14, 0x74); view.setUint8(15, 0x20) // "fmt "
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, numChannels, true)
+  view.setUint32(24, SAMPLE_RATE, true)
+  view.setUint32(28, byteRate, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, bitsPerSample, true)
+  view.setUint8(36, 0x64); view.setUint8(37, 0x61); view.setUint8(38, 0x74); view.setUint8(39, 0x61) // "data"
+  view.setUint32(40, dataSize, true)
+  new Uint8Array(buffer, 44).set(pcm)
+  return new Uint8Array(buffer)
+}
+
+async function handleTranscribe(request: Request, env: Env): Promise<Response> {
+  // POST /transcribe — body is raw PCM16 mono 16kHz audio. Bearer-gated.
+  // Wraps as WAV and sends to Deepgram's HTTP /v1/listen endpoint, which
+  // returns a single transcript for the chunk. This bypasses WebSockets
+  // entirely so the plugin's WebView (which can't open outbound WS) can
+  // still get real STT via fetch() — same network permission as /suggest.
+  if (request.method !== 'POST') return jsonResponse(405, { ok: false, error: 'POST only' })
+  const auth = request.headers.get('Authorization') ?? ''
+  if (!env.SHARED_SECRET || auth !== `Bearer ${env.SHARED_SECRET}`) {
+    return jsonResponse(401, { ok: false, error: 'unauthorized' })
+  }
+  if (!env.DEEPGRAM_API_KEY) {
+    return jsonResponse(500, { ok: false, error: 'DEEPGRAM_API_KEY not configured' })
+  }
+  const pcm = new Uint8Array(await request.arrayBuffer())
+  if (pcm.byteLength < 1600) {
+    // < ~50ms of audio at 16k. Don't burn quota on near-empty chunks.
+    return jsonResponse(200, { ok: true, text: '' })
+  }
+  const wav = wavWrap(pcm)
+  const dgRes = await fetch(DEEPGRAM_HTTP, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${env.DEEPGRAM_API_KEY}`,
+      'Content-Type': 'audio/wav',
+    },
+    body: wav,
+  })
+  if (!dgRes.ok) {
+    const errText = await dgRes.text()
+    return jsonResponse(dgRes.status, { ok: false, error: `deepgram ${dgRes.status}: ${errText.slice(0, 200)}` })
+  }
+  const json = (await dgRes.json()) as {
+    results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> }
+  }
+  const text = (json.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '').trim()
+  return jsonResponse(200, { ok: true, text })
+}
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -240,6 +316,7 @@ export default {
     const url = new URL(request.url)
     if (url.pathname === '/healthz') return jsonResponse(200, { ok: true })
     if (url.pathname === '/suggest') return handleSuggest(request, env)
+    if (url.pathname === '/transcribe') return handleTranscribe(request, env)
     if (url.pathname === '/ws') return handleWebSocket(request, env)
     return jsonResponse(404, { ok: false, error: 'not found' })
   },
