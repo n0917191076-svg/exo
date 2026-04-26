@@ -1,12 +1,6 @@
 // Cue — multi-mode conversation coach for Even G2 glasses.
 //
-// v0.1.0 (this file): scaffold + privacy opt-in + mode picker +
-// MOCK suggestion driver. The whole flow is exercisable on real glasses
-// without any API keys or Worker deployment — suggestions appear on a
-// timer using a small canned script, just to demonstrate the UX.
-//
-// v0.2.0+ (planned): real Deepgram STT via Worker, real LLM via Worker.
-// See ~/Documents/Pulse/ROADMAP.md § "Plan: Cue".
+// See ~/Documents/Pulse/ROADMAP.md § "Plan: Cue" for the full plan.
 
 import { connectEvenRuntime, type EvenRuntime, type InputSource, type SwipeDir } from './even'
 import { DEFAULT_MODE, MODES, type Mode, type ModeId, modeById, nextMode } from './modes'
@@ -25,6 +19,12 @@ import {
   setWorkerUrl,
 } from './storage'
 import { createTransport, type CueTransport, type TranscriptEvent } from './transport'
+import {
+  batteryHeaderSuffix,
+  shouldRequestSuggestion,
+  trimToSentences,
+  wrapWords,
+} from './utterance'
 
 // --- module state ---
 
@@ -36,25 +36,37 @@ let lastTranscript = ''
 let suggestions: string[] = []
 let proactiveActive = false // true when user just ring-tapped for topics
 let mockTimer: number | null = null
-// Repainting timer that lets the diagnostic stats line refresh while
-// mic is on but no transcripts are flowing yet (early frames-flow check).
-let realStatsTimer: number | null = null
+// Single tick while mic is on — handles the silence-based suggestion
+// trigger, idle auto-pause, battery refresh, and stats-line repaint.
+let micTickTimer: number | null = null
 
-// Honest cadence for v0.1.0 mock mode. v0.2.0+ replaces the timer with
-// real STT-driven triggers (silence detection, partial-transcript pulses).
 const MOCK_TICK_MS = 8_000
 
-// Real-mode tuning — when Worker is configured.
-// - request a fresh suggestion every N seconds of new transcript
-const SUGGEST_DEBOUNCE_MS = 6_000
-// - sliding transcript window we send to the LLM (tail of last N chars)
-const TRANSCRIPT_WINDOW_CHARS = 1200
+// Sliding transcript window we send to the LLM. Char budget is soft —
+// trimToSentences may emit slightly less to keep sentence boundaries clean.
+const TRANSCRIPT_WINDOW_CHARS = 1500
+// How often the mic-tick fires while listening. 1s is fast enough to feel
+// reactive on a sentence-final pause, slow enough not to hammer BLE.
+const MIC_TICK_MS = 1_000
+// Auto-pause after this much idle. Idle = no non-empty transcript chunk.
+const IDLE_AUTO_PAUSE_MS = 5 * 60_000
 
 let transport: CueTransport | null = null
 let isRealMode = false // true when transport.ready (Worker configured)
 let liveTranscript = '' // accumulated final transcripts
 let lastSuggestionAt = 0
 let suggestionInFlight = false
+// Tracking for shouldRequestSuggestion — set on each non-empty transcript chunk.
+let lastChunkText = ''
+let lastChunkAt = 0
+// Tracking for idle auto-pause — set on every non-empty transcript chunk
+// AND on mic-on (so the timer doesn't fire instantly on a quiet start).
+let lastTranscriptAt = 0
+// Cached so renderGlasses doesn't have to await. Refreshed on the mic tick.
+let cachedBatteryLevel: number | undefined
+// One-shot reason string shown on the idle screen after auto-pause.
+// Cleared when the user manually re-engages the mic.
+let autoPausedReason = ''
 
 // --- DOM scaffold (phone-side) ---
 
@@ -175,10 +187,41 @@ function trunc(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s
 }
 
+// Width budget per line on the 576-px greyscale display, derived from the
+// existing trunc-to-38 the v0.2 build used. Two lines per suggestion is the
+// sweet spot — enough room to land a question without dropping context.
+const LINE_WIDTH = 38
+const SUGGESTION_MAX_LINES = 2
+
+// Per-mode prefix glyph for suggestions — gives the user a visual cue of
+// which coach they're hearing without re-reading the header. Numbers stay
+// for accessibility ordering.
+const MODE_BULLET: Record<ModeId, string> = {
+  date: '★',
+  'argue-calm': '◇',
+  'sales-close': '▶',
+  sting: '⚡',
+  listen: '●',
+  custom: '◆',
+}
+
+function emphasizeFirstWord(s: string): string {
+  // Cheap proxy for "imperative-verb emphasis": uppercase the first word.
+  // The LLM's suggestion templates put the action verb first in every
+  // mode prompt, so this lands the eye on the right word without any
+  // English-NLP gymnastics.
+  const m = /^(\S+)(\s.*)?$/.exec(s.trim())
+  if (!m) return s
+  const [, first, rest] = m
+  return `${first!.toUpperCase()}${rest ?? ''}`
+}
+
 function renderGlasses(): string {
   const mode: Mode = modeById(currentMode)
   const micGlyph = micOn ? '●' : '○'
-  const header = `${mode.glyph} ${mode.label.toUpperCase()}    ${micGlyph} ${micOn ? 'LIVE' : 'mic off'}`
+  const battery = batteryHeaderSuffix(cachedBatteryLevel)
+  // Header is fixed-width-ish: mode label left, mic state center, battery right.
+  const header = `${mode.glyph} ${mode.label.toUpperCase()}  ${micGlyph} ${micOn ? 'LIVE' : 'mic off'}${battery ? `  ${battery}` : ''}`
   if (!agreedToPrivacy) {
     return [
       header,
@@ -190,16 +233,21 @@ function renderGlasses(): string {
     ].join('\n')
   }
   if (!micOn) {
-    return [
+    const idleLines: string[] = [
       header,
       '',
       `Mode: ${mode.label}`,
       mode.description.length > 64 ? trunc(mode.description, 64) : mode.description,
       '',
-      `${isRealMode ? '◉ live' : '◌ mock'} ready`,
-      '[tap] start mic',
-      '[2x] cycle mode',
-    ].join('\n')
+    ]
+    if (autoPausedReason) {
+      idleLines.push(autoPausedReason)
+      idleLines.push('')
+    }
+    idleLines.push(`${isRealMode ? '◉ live' : '◌ mock'} ready`)
+    idleLines.push('[tap] start mic')
+    idleLines.push('[2x] cycle mode')
+    return idleLines.join('\n')
   }
   // Live view.
   const lines: string[] = [header, '']
@@ -224,8 +272,15 @@ function renderGlasses(): string {
   lines.push('')
   lines.push('—'.repeat(20))
   if (suggestions.length > 0) {
+    const bullet = MODE_BULLET[currentMode] ?? '·'
+    const isCustom = currentMode === 'custom'
     suggestions.slice(0, 3).forEach((s, i) => {
-      lines.push(`${i + 1}. ${trunc(s, 38)}`)
+      const label = isCustom ? s.trim() : emphasizeFirstWord(s)
+      const prefix = `${i + 1}.${bullet} `
+      const wrapped = wrapWords(label, LINE_WIDTH - prefix.length, SUGGESTION_MAX_LINES)
+      wrapped.forEach((ln, j) => {
+        lines.push(j === 0 ? `${prefix}${ln}` : `${' '.repeat(prefix.length)}${ln}`)
+      })
     })
   } else {
     lines.push('(suggestions appear here)')
@@ -293,21 +348,55 @@ async function toggleMic(): Promise<void> {
   liveTranscript = ''
   proactiveActive = false
   if (micOn) {
+    // User re-engaged after auto-pause — clear the stale notice.
+    autoPausedReason = ''
+    lastTranscriptAt = Date.now()
+    lastChunkAt = Date.now()
+    lastChunkText = ''
     if (isRealMode && transport && even) {
       await startRealSession()
     } else {
       resetMock()
       startMockTimer()
     }
+    startMicTick()
   } else {
     stopMockTimer()
-    if (realStatsTimer !== null) {
-      window.clearInterval(realStatsTimer)
-      realStatsTimer = null
-    }
+    stopMicTick()
     if (transport) await transport.endMicSession()
     if (even) await even.stopMic()
   }
+  await paint()
+}
+
+function startMicTick(): void {
+  stopMicTick()
+  micTickTimer = window.setInterval(() => void micTick(), MIC_TICK_MS)
+}
+
+function stopMicTick(): void {
+  if (micTickTimer !== null) {
+    window.clearInterval(micTickTimer)
+    micTickTimer = null
+  }
+}
+
+async function micTick(): Promise<void> {
+  if (!micOn) return
+  const now = Date.now()
+  // Idle auto-pause: no non-empty transcript for IDLE_AUTO_PAUSE_MS.
+  if (now - lastTranscriptAt > IDLE_AUTO_PAUSE_MS) {
+    autoPausedReason = `Auto-paused after ${Math.round(IDLE_AUTO_PAUSE_MS / 60_000)} min idle`
+    await toggleMic() // turns mic off + repaints
+    return
+  }
+  // Refresh battery cache (cheap — usually returns the pushed value).
+  if (even) {
+    try { cachedBatteryLevel = await even.getBatteryLevel() } catch { /* ignore */ }
+  }
+  // Silence-driven suggestion trigger — sentence-final fires on transcript
+  // arrival; this catches the case where the user simply stops talking.
+  if (isRealMode) void maybeRequestSuggestions()
   await paint()
 }
 
@@ -354,12 +443,6 @@ async function startRealSession(): Promise<void> {
     return
   }
   lastTranscript = '(listening — say something)'
-  // Repaint every 1.5s while real-mode mic is on so the diagnostic stats
-  // line (audio frames=N chunks=X/Yok) updates even if no transcript
-  // event has fired yet. Cleared when mic stops.
-  if (realStatsTimer === null) {
-    realStatsTimer = window.setInterval(() => { void paint() }, 1500)
-  }
   await paint()
 }
 
@@ -368,7 +451,12 @@ function onTranscriptFrame(e: TranscriptEvent): void {
   // the rolling window we send to the LLM.
   lastTranscript = e.text
   if (e.isFinal) {
-    liveTranscript = `${liveTranscript} ${e.text}`.slice(-TRANSCRIPT_WINDOW_CHARS).trim()
+    liveTranscript = trimToSentences(`${liveTranscript} ${e.text}`, TRANSCRIPT_WINDOW_CHARS)
+    if (e.text.trim().length > 0) {
+      lastChunkText = e.text
+      lastChunkAt = Date.now()
+      lastTranscriptAt = Date.now()
+    }
     void maybeRequestSuggestions()
   }
   void paint()
@@ -376,9 +464,17 @@ function onTranscriptFrame(e: TranscriptEvent): void {
 
 async function maybeRequestSuggestions(): Promise<void> {
   if (!transport || !isRealMode) return
-  if (suggestionInFlight) return
-  if (Date.now() - lastSuggestionAt < SUGGEST_DEBOUNCE_MS) return
-  if (liveTranscript.length < 16) return // too short to be useful
+  const fire = shouldRequestSuggestion(
+    {
+      lastChunkText,
+      lastChunkAt,
+      lastSuggestionAt,
+      inFlight: suggestionInFlight,
+      transcriptLen: liveTranscript.length,
+    },
+    Date.now(),
+  )
+  if (!fire) return
   suggestionInFlight = true
   lastSuggestionAt = Date.now()
   try {
@@ -434,6 +530,7 @@ function onDoubleTap(source: InputSource): void {
   if (even) {
     micOn = false
     stopMockTimer()
+    stopMicTick()
     void even.exitApp()
   }
 }

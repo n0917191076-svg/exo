@@ -40,6 +40,10 @@ export interface EvenRuntime {
   exitApp: () => Promise<void>
   getStorage: (key: string) => Promise<string>
   setStorage: (key: string, value: string) => Promise<boolean>
+  // Battery level 0-100, or undefined if the device hasn't reported it yet.
+  // Cheap to call repeatedly — uses the latest cached push value when
+  // available, falls back to a synchronous getDeviceInfo poll otherwise.
+  getBatteryLevel: () => Promise<number | undefined>
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -97,6 +101,19 @@ export async function connectEvenRuntime(initial: string): Promise<EvenRuntime |
   let doubleTapHandler: ((source: InputSource) => void) | null = null
   let foregroundHandler: (() => void) | null = null
   let audioHandler: ((frame: AudioFrame) => void) | null = null
+  // Latest battery push from onDeviceStatusChanged. Push beats poll for
+  // freshness and avoids hitting BLE on every tick.
+  let cachedBattery: number | undefined
+  try {
+    const maybeOn = (bridge as unknown as {
+      onDeviceStatusChanged?: (cb: (s: { batteryLevel?: number }) => void) => () => void
+    }).onDeviceStatusChanged
+    if (typeof maybeOn === 'function') {
+      maybeOn(s => {
+        if (typeof s.batteryLevel === 'number') cachedBattery = s.batteryLevel
+      })
+    }
+  } catch { /* push not supported on this SDK build — fall back to poll */ }
 
   function classifySource(src: number | undefined): InputSource {
     if (src === EventSourceType.TOUCH_EVENT_FROM_RING) return 'ring'
@@ -175,6 +192,17 @@ export async function connectEvenRuntime(initial: string): Promise<EvenRuntime |
     },
     async setStorage(key, value) {
       try { return await bridge.setLocalStorage(key, value) } catch { return false }
+    },
+    async getBatteryLevel() {
+      if (typeof cachedBattery === 'number') return cachedBattery
+      try {
+        const info = (await bridge.getDeviceInfo()) as { batteryLevel?: number } | null
+        const lvl = info?.batteryLevel
+        if (typeof lvl === 'number') cachedBattery = lvl
+        return lvl
+      } catch {
+        return undefined
+      }
     },
   }
 }

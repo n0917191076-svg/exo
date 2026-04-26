@@ -4,16 +4,17 @@
 
 A multi-mode conversation coach for Even Realities G2 smart glasses. Listens to the conversation, surfaces 2-3 suggested responses on the display in real time. Pick a mode (Date / Argue calm / Sales close / Sting / Listen well / Custom) to shape the suggestions. The app never speaks for you — it offers cues you say in your own voice.
 
-## Status: v0.2.0 (real STT + LLM via your Cloudflare Worker; mock fallback retained)
+## Status: v0.3.0 (suggestion-quality polish + glasses UI tweaks)
 
-If you've deployed the personal Worker (see `worker-template/README.md`) and pasted its URL + bearer token in phone settings, Cue streams audio over WebSocket → Deepgram for live transcription, and POSTs your rolling transcript to the Worker's `/suggest` endpoint for Claude Haiku LLM suggestions. If those settings are blank or the Worker is unreachable, Cue falls back to the v0.1.0 timer-driven mock suggestions so the app stays demonstrable.
+If you've deployed the personal Worker (see `worker-template/README.md`) and pasted its URL + bearer token in phone settings, Cue streams audio over chunked HTTP → Deepgram for transcription, and POSTs your rolling transcript to the Worker's `/suggest` endpoint for LLM suggestions. If those settings are blank or the Worker is unreachable, Cue falls back to the v0.1.0 timer-driven mock suggestions so the app stays demonstrable.
 
 | Version | What's in it |
 |---|---|
 | v0.1.0 | Scaffold, mode picker, privacy opt-in, mic toggle, glasses UI, mock suggestion driver |
-| **v0.2.0** *(current)* | Worker template (Deepgram WS proxy + `/suggest` Anthropic/OpenAI bridge), real audio capture via `audioControl`, transport layer, live captions, debounced LLM suggestions. Mock fallback preserved. |
-| v0.3.0 *(planned)* | Suggestion quality polish, retry/backoff, transcript trimming heuristics, end-of-utterance detection. |
-| v0.4.0 *(planned)* | Battery indicator, auto-pause, mode-specific UI tweaks, edge cases. |
+| v0.2.0 | Worker template (Deepgram + LLM bridge), real audio capture via `audioControl`, transport layer, live captions, debounced LLM suggestions. Mock fallback preserved. |
+| v0.2.5 | Test infrastructure: chunked HTTP transport, JSDOM tests, worker integration tests, app.json lint, KNOWN_QUIRKS, WebKit harness for iOS WKWebView parity. |
+| **v0.3.0** *(current)* | End-of-utterance detection (sentence-final punctuation + silence-gap + max-wait), sentence-aware transcript trimming, battery glyph in glasses header, idle auto-pause after 5 min, word-boundary line wrap on suggestions, per-mode bullet glyphs, first-word emphasis. |
+| v0.4.0 *(planned)* | Worker-side dedupe of repeated suggestions, retry/backoff on rate-limit, partial-transcript pulses if Deepgram streaming becomes available. |
 
 ## How it works (current v0.2.0)
 
@@ -84,22 +85,23 @@ npx evenhub-simulator --glow http://localhost:5176
 | File | Purpose |
 |---|---|
 | `src/main.ts` | Entry, state machine, phone settings UI, glasses render |
-| `src/even.ts` | Glasses bridge wrapper (text container, input routing, mic capture) |
-| `src/transport.ts` | Worker transport — WebSocket for audio + REST for suggestions |
+| `src/even.ts` | Glasses bridge wrapper (text container, input routing, mic capture, battery) |
+| `src/transport.ts` | Worker transport — chunked HTTP POST for audio + REST for suggestions |
 | `src/modes.ts` | Mode registry — id, label, glyph, system prompt, behavior flags |
+| `src/utterance.ts` | Pure heuristics — end-of-utterance trigger, sentence-aware trim, word wrap, battery glyph |
 | `src/mock.ts` | Mock-mode timer-driven canned suggestions (fallback when Worker unset) |
 | `src/storage.ts` | Native `setLocalStorage` wrapper for mode + privacy + Worker config |
-| `worker-template/` | Cloudflare Worker source — Deepgram WS proxy + `/suggest` LLM bridge |
-| `tests/*.test.ts` | Vitest unit tests (17 passing) |
+| `worker-template/` | Cloudflare Worker source — Deepgram + `/suggest` LLM bridge |
+| `tests/*.test.ts` | Vitest unit tests (45 passing) |
 | `scripts/regression.mjs` | Simulator-driven e2e flow check (mock-fallback path, 4/4) |
 
 ## Roadmap
 
-Full plan in `~/Documents/Pulse/ROADMAP.md` § "Plan: Cue". Remaining for v0.3+:
-- Suggestion debounce/backoff tuning, end-of-utterance detection so suggestions arrive when there's a natural pause rather than on a fixed timer
-- Trim long transcripts more intelligently (currently last 1200 chars rolling window)
-- Battery measurement + auto-pause after N min idle
-- Per-mode glance-friendly UI tweaks (line wrap, font emphasis on imperative verbs)
+Full plan in `~/Documents/Pulse/ROADMAP.md` § "Plan: Cue". Remaining for v0.4+:
+- Worker-side dedupe of suggestions repeating the same advice
+- Retry/backoff on Deepgram or LLM rate-limit
+- Partial-transcript pulses if streaming-Deepgram path becomes viable on WKWebView
+- Phone-side IDLE_AUTO_PAUSE_MS setting (currently a 5-min hardcode)
 
 ## Packaging note
 
