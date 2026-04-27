@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:worker": "node scripts/dev-worker.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "qr": "evenhub qr",
