@@ -23,9 +23,6 @@
 
 import { createServer } from 'node:http'
 
-const PORT = Number.parseInt(process.env.PORT ?? '8787', 10)
-const LATENCY_MS = Number.parseInt(process.env.LATENCY_MS ?? '200', 10)
-
 // Two-speaker conversational fixtures. Rotated round-robin per /transcribe
 // call so the glasses see fresh text on every chunk. Each entry is one
 // "chunk's worth" of utterances — speaker IDs alternate to demonstrate
@@ -103,8 +100,6 @@ const SUGGEST_FIXTURES = {
   ],
 }
 
-let transcribeIdx = 0
-
 function send(res, status, body, contentType = 'application/json') {
   res.writeHead(status, {
     'Content-Type': contentType,
@@ -124,54 +119,84 @@ async function readBody(req) {
   })
 }
 
-const server = createServer(async (req, res) => {
-  const t0 = Date.now()
-  const url = req.url ?? '/'
-  const method = req.method ?? 'GET'
+/**
+ * Build an http.Server with the dev-worker request handler. Exported so
+ * tests can spawn an instance on an ephemeral port, hit it, and close.
+ *
+ * Options:
+ *   latencyMs: simulated batch delay before responding (default 0 in
+ *              factory; the CLI entry below defaults to 200 for realism).
+ *   logger:    function called for every handled request. Defaults to
+ *              no-op so tests don't litter output; the CLI sets a console
+ *              logger.
+ */
+export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
+  let transcribeIdx = 0
+  return createServer(async (req, res) => {
+    const t0 = Date.now()
+    const url = req.url ?? '/'
+    const method = req.method ?? 'GET'
 
-  if (method === 'OPTIONS') {
-    return send(res, 204, '')
-  }
+    if (method === 'OPTIONS') {
+      return send(res, 204, '')
+    }
 
-  if (method === 'GET' && url === '/healthz') {
-    console.log(`${new Date().toISOString()}  GET  /healthz`)
-    return send(res, 200, 'ok', 'text/plain')
-  }
+    if (method === 'GET' && url === '/healthz') {
+      logger({ method, url, status: 200 })
+      return send(res, 200, 'ok', 'text/plain')
+    }
 
-  if (method === 'POST' && url === '/transcribe') {
-    const body = await readBody(req)
-    if (LATENCY_MS > 0) await new Promise(r => setTimeout(r, LATENCY_MS))
-    const fixture = TRANSCRIBE_FIXTURES[transcribeIdx % TRANSCRIBE_FIXTURES.length]
-    transcribeIdx += 1
-    console.log(
-      `${new Date().toISOString()}  POST /transcribe  ${(body.byteLength / 1024).toFixed(1)}KB  ${Date.now() - t0}ms  → "${fixture.text.slice(0, 50)}"`,
-    )
-    return send(res, 200, { ok: true, ...fixture })
-  }
+    if (method === 'POST' && url === '/transcribe') {
+      const body = await readBody(req)
+      if (latencyMs > 0) await new Promise(r => setTimeout(r, latencyMs))
+      const fixture = TRANSCRIBE_FIXTURES[transcribeIdx % TRANSCRIBE_FIXTURES.length]
+      transcribeIdx += 1
+      logger({ method, url, status: 200, bytes: body.byteLength, ms: Date.now() - t0, summary: fixture.text.slice(0, 50) })
+      return send(res, 200, { ok: true, ...fixture })
+    }
 
-  if (method === 'POST' && url === '/suggest') {
-    const body = await readBody(req)
-    let payload = {}
-    try { payload = JSON.parse(body.toString('utf8')) } catch { /* ignore */ }
-    const mode = payload.mode ?? 'date'
-    const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.date
-    if (LATENCY_MS > 0) await new Promise(r => setTimeout(r, LATENCY_MS))
-    console.log(
-      `${new Date().toISOString()}  POST /suggest     mode=${mode} transcript="${(payload.transcript ?? '').slice(0, 40)}…"  ${Date.now() - t0}ms`,
-    )
-    return send(res, 200, { ok: true, suggestions })
-  }
+    if (method === 'POST' && url === '/suggest') {
+      const body = await readBody(req)
+      let payload = {}
+      try { payload = JSON.parse(body.toString('utf8')) } catch { /* ignore */ }
+      const mode = payload.mode ?? 'date'
+      const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.date
+      if (latencyMs > 0) await new Promise(r => setTimeout(r, latencyMs))
+      logger({ method, url, status: 200, mode, transcript: payload.transcript ?? '', ms: Date.now() - t0 })
+      return send(res, 200, { ok: true, suggestions })
+    }
 
-  console.log(`${new Date().toISOString()}  ${method} ${url}  → 404`)
-  return send(res, 404, { ok: false, error: 'not found' })
-})
+    logger({ method, url, status: 404 })
+    return send(res, 404, { ok: false, error: 'not found' })
+  })
+}
 
-server.listen(PORT, () => {
-  console.log(`Cue dev-worker listening on http://localhost:${PORT}`)
-  console.log(`  Latency:  ${LATENCY_MS}ms (set LATENCY_MS to change)`)
-  console.log(`  Endpoints: /healthz  /transcribe  /suggest`)
-  console.log(`  Configure phone settings:`)
-  console.log(`    Worker URL: http://localhost:${PORT}`)
-  console.log(`    Bearer:     anything-non-empty`)
-  console.log(``)
-})
+// CLI entry — run `node scripts/dev-worker.mjs` (or `npm run dev:worker`).
+// Skipped when imported as a module (e.g., from a test).
+const isCli = import.meta.url === `file://${process.argv[1]}`
+if (isCli) {
+  const PORT = Number.parseInt(process.env.PORT ?? '8787', 10)
+  const LATENCY_MS = Number.parseInt(process.env.LATENCY_MS ?? '200', 10)
+  const server = createDevWorker({
+    latencyMs: LATENCY_MS,
+    logger: (e) => {
+      const ts = new Date().toISOString()
+      if (e.url === '/transcribe') {
+        console.log(`${ts}  POST /transcribe  ${(e.bytes / 1024).toFixed(1)}KB  ${e.ms}ms  → "${e.summary}"`)
+      } else if (e.url === '/suggest') {
+        console.log(`${ts}  POST /suggest     mode=${e.mode} transcript="${e.transcript.slice(0, 40)}…"  ${e.ms}ms`)
+      } else {
+        console.log(`${ts}  ${e.method} ${e.url}  → ${e.status}`)
+      }
+    },
+  })
+  server.listen(PORT, () => {
+    console.log(`Cue dev-worker listening on http://localhost:${PORT}`)
+    console.log(`  Latency:  ${LATENCY_MS}ms (set LATENCY_MS to change)`)
+    console.log(`  Endpoints: /healthz  /transcribe  /suggest`)
+    console.log(`  Configure phone settings:`)
+    console.log(`    Worker URL: http://localhost:${PORT}`)
+    console.log(`    Bearer:     anything-non-empty`)
+    console.log(``)
+  })
+}
