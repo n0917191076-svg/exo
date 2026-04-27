@@ -20,6 +20,8 @@ import {
   setIdleAutoPauseMin,
   setMode,
   setPrivacyAgreed,
+  getCalibrating,
+  setCalibrating,
   setShowDebugOverlay,
   setStorageBridge,
   setWearerSpeakerId,
@@ -84,6 +86,9 @@ let autoPausedReason = ''
 // v0.4.0 settings — hydrated from storage on bootstrap.
 let showDebugOverlay = false  // diagnostic stats line on glasses
 let wearerSpeakerId = DEFAULT_WEARER_SPEAKER_ID  // -1 = none / no filter
+// v0.4.2: when true, the next non-empty utterance's speaker is anchored
+// as wearer + the flag is cleared. Set by phone-side "Calibrate me".
+let calibratingNow = false
 
 // v0.4.0 transcript display: per-speaker rolling buffer. Pure helpers
 // in utterance.ts (appendTurn / pruneTurns / speakerLabel) — covered
@@ -227,6 +232,10 @@ root.innerHTML = `
         </label>
         <p style="color: #7b7b7b; font-size: .85em; margin: 0;">When set, your own speech is shown but excluded from the suggestion prompt — Cue suggests responses TO the other person, not echoes of you. Watch the glasses for [A]/[B]/etc labels in a real conversation, then pick yours.</p>
         <p id="wearer-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
+
+        <button id="calibrate-me" type="button" style="padding: .35rem .7rem; cursor: pointer; max-width: 220px; margin-top: .25rem;">Calibrate me (one-tap)</button>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">Tap, put on glasses, say "this is me" — the next utterance Deepgram detects becomes your speaker ID. Replaces the dropdown above.</p>
+        <p id="calibrate-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
       </div>
     </section>
 
@@ -276,6 +285,16 @@ const idleStatus = document.querySelector<HTMLParagraphElement>('#idle-status')!
 const showDebugOverlayInput = document.querySelector<HTMLInputElement>('#show-debug-overlay')!
 const wearerSpeakerSelect = document.querySelector<HTMLSelectElement>('#wearer-speaker-id')!
 const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-status')!
+const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
+const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
+
+calibrateBtn.addEventListener('click', async () => {
+  await setCalibrating(true)
+  calibratingNow = true
+  calibrateStatus.style.color = '#2a2'
+  calibrateStatus.textContent = 'Listening for your voice — say "this is me" within ~10s.'
+  window.setTimeout(() => { calibrateStatus.textContent = '' }, 12_000)
+})
 
 showDebugOverlayInput.addEventListener('change', async () => {
   showDebugOverlay = showDebugOverlayInput.checked
@@ -343,6 +362,7 @@ const MODE_BULLET: Record<ModeId, string> = {
   'sales-close': '▶',
   sting: '⚡',
   listen: '●',
+  interview: '▣',
   custom: '◆',
 }
 
@@ -612,6 +632,24 @@ function onTranscriptFrame(e: TranscriptEvent): void {
     appendTurn(conversation, t.speaker, t.text, Date.now())
   }
 
+  // v0.4.2 calibrate-me: if the user just tapped "Calibrate me" on the
+  // phone, anchor the FIRST non-empty speaker we see as wearer + clear
+  // the one-shot flag. Persists to storage so it survives reload.
+  if (calibratingNow && turns.length > 0) {
+    const firstSpeaker = turns[0].speaker
+    wearerSpeakerId = firstSpeaker
+    calibratingNow = false
+    void setWearerSpeakerId(firstSpeaker)
+    void setCalibrating(false)
+    // Reflect in the UI immediately
+    if (wearerSpeakerSelect) wearerSpeakerSelect.value = String(firstSpeaker)
+    if (calibrateStatus) {
+      calibrateStatus.style.color = '#2a2'
+      calibrateStatus.textContent = `Got it — Speaker ${speakerLabel(firstSpeaker)} is you.`
+      window.setTimeout(() => { calibrateStatus.textContent = '' }, 5_000)
+    }
+  }
+
   // Build the rolling LLM-context buffer EXCLUDING the wearer's lines
   // (so suggestions are responses TO the other person, not echoes of
   // what the wearer just said).
@@ -657,9 +695,19 @@ async function maybeRequestSuggestions(): Promise<void> {
       mode: currentMode,
       transcript: liveTranscript,
       customPrompt,
+      // v0.4.2: send recent suggestions so worker can dedupe — no LLM
+      // re-emitting the same advice 3 times in a row.
+      recentSuggestions: recentSuggestionsRing.slice(),
     })
     if (result.ok) {
       suggestions = result.suggestions
+      // Track the new suggestions for next-call dedupe.
+      for (const s of result.suggestions) {
+        recentSuggestionsRing.push(s)
+      }
+      while (recentSuggestionsRing.length > RECENT_SUGGESTIONS_CAP) {
+        recentSuggestionsRing.shift()
+      }
     } else {
       suggestions = [`(LLM error: ${result.error.slice(0, 40)})`]
     }
@@ -668,6 +716,12 @@ async function maybeRequestSuggestions(): Promise<void> {
     suggestionInFlight = false
   }
 }
+
+// Rolling buffer of recent LLM suggestions, sent with each /suggest call
+// so the worker can instruct the LLM "don't repeat these." Capped to a
+// reasonable history; older suggestions roll off naturally.
+const RECENT_SUGGESTIONS_CAP = 12
+const recentSuggestionsRing: string[] = []
 
 async function cycleMode(): Promise<void> {
   currentMode = nextMode(currentMode)
@@ -813,6 +867,7 @@ async function bootstrap(): Promise<void> {
   showDebugOverlayInput.checked = showDebugOverlay
   wearerSpeakerId = await getWearerSpeakerId()
   wearerSpeakerSelect.value = String(wearerSpeakerId)
+  calibratingNow = await getCalibrating()
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
   transport = createTransport(wUrl, wTok)

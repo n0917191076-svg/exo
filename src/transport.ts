@@ -41,6 +41,8 @@ export interface CueTransport {
     mode: string
     transcript: string
     customPrompt?: string
+    /** v0.4.2: rolling list of recent suggestions; worker adds a "don't repeat these" instruction to the LLM prompt. */
+    recentSuggestions?: string[]
   }) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
   stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
@@ -256,7 +258,7 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
     stats() {
       return { framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError }
     },
-    async requestSuggestions({ mode, transcript, customPrompt }) {
+    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions }) {
       if (!ready) return { ok: false as const, error: 'Worker not configured' }
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 12_000)
@@ -267,7 +269,7 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
             Authorization: `Bearer ${bearerToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ mode, transcript, customPrompt }),
+          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions }),
           signal: ctrl.signal,
         })
         if (!resp.ok) {

@@ -158,7 +158,12 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   if (!env.SHARED_SECRET || auth !== `Bearer ${env.SHARED_SECRET}`) {
     return jsonResponse(401, { ok: false, error: 'unauthorized' })
   }
-  let body: { mode?: string; transcript?: string; customPrompt?: string }
+  let body: {
+    mode?: string
+    transcript?: string
+    customPrompt?: string
+    recentSuggestions?: string[]
+  }
   try {
     body = (await request.json()) as typeof body
   } catch {
@@ -167,7 +172,15 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   if (!body.transcript || typeof body.transcript !== 'string') {
     return jsonResponse(400, { ok: false, error: 'transcript required' })
   }
-  const systemPrompt = body.customPrompt?.trim() || systemPromptForMode(body.mode ?? 'date')
+  // v0.4.2: client passes its rolling list of recent suggestions; we
+  // append a "don't repeat these" instruction to the system prompt so
+  // the LLM doesn't re-surface the same phrasing.
+  const baseSystem = body.customPrompt?.trim() || systemPromptForMode(body.mode ?? 'date')
+  const recent = (body.recentSuggestions ?? []).filter(s => typeof s === 'string').slice(-12)
+  const dedupeNote = recent.length > 0
+    ? `\n\nDO NOT repeat any of these recent suggestions verbatim or near-verbatim — find a different angle:\n${recent.map(s => `- ${s}`).join('\n')}`
+    : ''
+  const systemPrompt = baseSystem + dedupeNote
 
   // Anthropic-first; OpenAI fallback if no Anthropic key is set.
   if (env.ANTHROPIC_API_KEY) {
@@ -189,6 +202,7 @@ function systemPromptForMode(mode: string): string {
     'sales-close': 'You are a sales coach. Suggest 2-3 short responses to any objection raised. Each under 14 words. Numbered list, no preamble.',
     sting: 'Suggest 2-3 sharp but friendly comebacks under 12 words. Nothing mean. Numbered list, no preamble.',
     listen: 'Suggest 2-3 short reflective listening prompts ("what I hear is...", "tell me more about..."). Under 14 words. Numbered list, no preamble.',
+    interview: 'You are coaching the wearer through being interviewed. Based on the interviewer\'s most recent question, suggest 2-3 short structured answers (under 20 words). Lead with the headline; STAR framing only when natural. Avoid hedging language. Numbered list, no preamble.',
   }
   return PROMPTS[mode] ?? PROMPTS.date!
 }

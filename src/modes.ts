@@ -5,7 +5,7 @@
 // settings page (radio buttons). User can also write a fully custom prompt
 // via the "custom" mode.
 
-export type ModeId = 'date' | 'argue-calm' | 'sales-close' | 'sting' | 'listen' | 'custom'
+export type ModeId = 'date' | 'argue-calm' | 'sales-close' | 'sting' | 'listen' | 'interview' | 'custom'
 
 export interface Mode {
   id: ModeId
@@ -66,6 +66,16 @@ export const MODES: Mode[] = [
       'Reflective listening prompts ("what I hear is...", "tell me more"). For when you need to slow down.',
     systemPrompt:
       'You are coaching the wearer in reflective listening. Based on the transcript, suggest 2-3 short prompts that mirror what the other person said and invite them to elaborate. Use phrasings like "what I hear is...", "tell me more about...", "it sounds like...". Under 14 words each. Numbered list, no preamble.',
+    proactiveSupported: false,
+  },
+  {
+    id: 'interview',
+    label: 'Interview',
+    glyph: '▣',
+    description:
+      'Crisp, structured answers for being interviewed. Uses STAR-shaped framing, leads with the headline.',
+    systemPrompt:
+      'You are coaching the wearer through being interviewed. Based on the interviewer\'s most recent question or statement, suggest 2-3 short, structured answers (under 20 words each). Lead with the headline; use Situation-Task-Action-Result framing only when it fits naturally. Avoid hedging language ("I think", "maybe"). Numbered list, no preamble.',
     proactiveSupported: false,
   },
   {

@@ -133,3 +133,15 @@ export async function getWearerSpeakerId(): Promise<number> {
 export async function setWearerSpeakerId(id: number): Promise<void> {
   await writeRaw(KEY_WEARER_SPEAKER_ID, String(Math.floor(id)))
 }
+
+// v0.4.2: one-shot flag set by phone-side "Calibrate me" button. Plugin
+// reads + clears on the next non-empty utterance, anchoring that
+// speaker as the wearer. Replaces the manual "Speaker A is me" dropdown
+// for users who'd rather just press a button + say their name.
+const KEY_CALIBRATING = 'cue:calibrating:v1'
+export async function getCalibrating(): Promise<boolean> {
+  return (await readRaw(KEY_CALIBRATING)) === '1'
+}
+export async function setCalibrating(on: boolean): Promise<void> {
+  await writeRaw(KEY_CALIBRATING, on ? '1' : '0')
+}
