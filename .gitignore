@@ -26,6 +26,19 @@ dist-ssr
 inspect-portal.out
 inspect-portal.summary.txt
 
+# Output of scripts/inspect-hub.mjs — Playwright-based dev portal inspector
+inspect-hub.out
+inspect-hub.summary.txt
+.hub-portal-session.json
+# Output files from scripts/inspect-hub-project.mjs (NOT the script itself)
+inspect-hub-project.summary.txt
+inspect-hub-project.list.html
+inspect-hub-project.detail.html
+inspect-hub-project.upload.html
+.upload-dev-failure.html
+.upload-dev-after-file.html
+.upload-dev-final.html
+
 # Regression test screenshots — regenerated each run
 tests/screenshots-regression/
 

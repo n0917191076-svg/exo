@@ -13,6 +13,8 @@
     "deploy": "npm run build && npm run pack && echo '\\ncue.ehpk ready: '$(pwd)'/cue.ehpk\\nRun npm run deploy:upload to push to the portal'",
     "deploy:upload": "node scripts/deploy-portal.mjs",
     "deploy:full": "npm run deploy && npm run deploy:upload",
+    "hub:inspect": "node scripts/inspect-hub.mjs",
+    "hub:upload": "node scripts/upload-dev.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node scripts/regression.mjs",
