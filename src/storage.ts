@@ -44,8 +44,16 @@ const KEY_CUSTOM_PROMPT = 'cue:custom-prompt:v1'
 const KEY_WORKER_URL = 'cue:worker-url:v1'
 const KEY_WORKER_TOKEN = 'cue:worker-token:v1'
 const KEY_IDLE_AUTO_PAUSE_MIN = 'cue:idle-auto-pause-min:v1'
+// v0.4.0: show the diagnostic stats line on glasses (audio frames /
+// chunks / errors). Default OFF — only meant for active debugging.
+const KEY_SHOW_DEBUG_OVERLAY = 'cue:show-debug-overlay:v1'
+// v0.4.0: which Deepgram-assigned speaker is the wearer. -1 = none /
+// auto-detect (don't filter from suggestion context). 0/1/... = anchor
+// that speaker as wearer; suggestions exclude their lines.
+const KEY_WEARER_SPEAKER_ID = 'cue:wearer-speaker-id:v1'
 
 export const DEFAULT_IDLE_AUTO_PAUSE_MIN = 5
+export const DEFAULT_WEARER_SPEAKER_ID = -1
 
 export async function hasAgreedToPrivacy(): Promise<boolean> {
   const raw = await readRaw(KEY_AGREED)
@@ -103,4 +111,25 @@ export async function getIdleAutoPauseMin(): Promise<number> {
 export async function setIdleAutoPauseMin(min: number): Promise<void> {
   const n = Math.max(0, Math.floor(min))
   await writeRaw(KEY_IDLE_AUTO_PAUSE_MIN, String(n))
+}
+
+export async function getShowDebugOverlay(): Promise<boolean> {
+  return (await readRaw(KEY_SHOW_DEBUG_OVERLAY)) === '1'
+}
+
+export async function setShowDebugOverlay(on: boolean): Promise<void> {
+  await writeRaw(KEY_SHOW_DEBUG_OVERLAY, on ? '1' : '0')
+}
+
+// Wearer speaker id: -1 = none / auto-detect (no filter), 0+ = anchor.
+export async function getWearerSpeakerId(): Promise<number> {
+  const raw = await readRaw(KEY_WEARER_SPEAKER_ID)
+  if (raw === null) return DEFAULT_WEARER_SPEAKER_ID
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) return DEFAULT_WEARER_SPEAKER_ID
+  return n
+}
+
+export async function setWearerSpeakerId(id: number): Promise<void> {
+  await writeRaw(KEY_WEARER_SPEAKER_ID, String(Math.floor(id)))
 }

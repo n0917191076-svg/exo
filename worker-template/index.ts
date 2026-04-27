@@ -36,7 +36,11 @@ interface Env {
 const DEEPGRAM_WS = 'https://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&encoding=linear16&sample_rate=16000&channels=1'
 // Batch (HTTP) Deepgram endpoint used by /transcribe — same model, no
 // interim results since each call gets one chunk.
-const DEEPGRAM_HTTP = 'https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true'
+//   diarize=true        → adds speaker:N per word (so plugin can tell
+//                          who is talking — wearer vs other person)
+//   utterances=true     → groups words into speaker turns with start/end
+//   smart_format=true   → cleaner punctuation, numbers, dates
+const DEEPGRAM_HTTP = 'https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&utterances=true&smart_format=true'
 
 const SAMPLE_RATE = 16000
 
@@ -114,10 +118,23 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse(dgRes.status, { ok: false, error: `deepgram ${dgRes.status}: ${errText.slice(0, 200)}` })
   }
   const json = (await dgRes.json()) as {
-    results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> }
+    results?: {
+      channels?: Array<{ alternatives?: Array<{ transcript?: string; words?: Array<{ word?: string; speaker?: number; confidence?: number }> }> }>
+      utterances?: Array<{ start?: number; end?: number; speaker?: number; transcript?: string; confidence?: number }>
+    }
   }
   const text = (json.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '').trim()
-  return jsonResponse(200, { ok: true, text })
+  // Per-speaker utterances. Each is a turn — same speaker until they
+  // stop. Plugin uses these to show speaker labels and to exclude the
+  // wearer's own speech from the suggestion-prompt context.
+  const utterances = (json.results?.utterances ?? [])
+    .map(u => ({
+      speaker: typeof u.speaker === 'number' ? u.speaker : 0,
+      text: (u.transcript ?? '').trim(),
+      confidence: typeof u.confidence === 'number' ? u.confidence : 0,
+    }))
+    .filter(u => u.text.length > 0)
+  return jsonResponse(200, { ok: true, text, utterances })
 }
 
 function corsHeaders(): Record<string, string> {

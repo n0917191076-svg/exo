@@ -17,10 +17,19 @@
 // If the user hasn't configured a Worker, transport.ready returns false
 // and main.ts falls back to mock-mode suggestions.
 
+export interface TranscriptUtterance {
+  speaker: number  // Deepgram-assigned speaker id (0, 1, 2, ...)
+  text: string
+  confidence: number
+}
+
 export interface TranscriptEvent {
   type: 'transcript'
-  text: string
+  text: string  // joined transcript for the chunk (back-compat)
   isFinal: boolean
+  // v0.4.0: per-speaker turns within the chunk. Empty array if Deepgram
+  // returned no utterances field (older worker, single-speaker chunk, etc).
+  utterances: TranscriptUtterance[]
 }
 
 export interface CueTransport {
@@ -137,7 +146,12 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
         onErrorCb?.(`transcribe HTTP ${resp.status}: ${txt.slice(0, 80)}`)
         return
       }
-      const json = (await resp.json()) as { ok: boolean; text?: string; error?: string }
+      const json = (await resp.json()) as {
+        ok: boolean
+        text?: string
+        error?: string
+        utterances?: Array<{ speaker?: number; text?: string; confidence?: number }>
+      }
       if (!json.ok) {
         lastError = `worker said: ${(json.error ?? 'unknown').slice(0, 60)}`
         logSink?.({
@@ -155,8 +169,15 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
         status: resp.status, ms: Date.now() - startedAt, ok: true, bytes: chunk.byteLength,
       })
       const text = (json.text ?? '').trim()
+      const utterances: TranscriptUtterance[] = (json.utterances ?? [])
+        .map(u => ({
+          speaker: typeof u.speaker === 'number' ? u.speaker : 0,
+          text: (u.text ?? '').trim(),
+          confidence: typeof u.confidence === 'number' ? u.confidence : 0,
+        }))
+        .filter(u => u.text.length > 0)
       if (text && onTranscriptCb) {
-        onTranscriptCb({ type: 'transcript', text, isFinal: true })
+        onTranscriptCb({ type: 'transcript', text, isFinal: true, utterances })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

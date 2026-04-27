@@ -7,9 +7,12 @@ import { DEFAULT_MODE, MODES, type Mode, type ModeId, modeById, nextMode } from 
 import { nextMockExchange, nextMockProactiveTopics, resetMock } from './mock'
 import {
   DEFAULT_IDLE_AUTO_PAUSE_MIN,
+  DEFAULT_WEARER_SPEAKER_ID,
   getCustomPrompt,
   getIdleAutoPauseMin,
   getMode,
+  getShowDebugOverlay,
+  getWearerSpeakerId,
   getWorkerToken,
   getWorkerUrl,
   hasAgreedToPrivacy,
@@ -17,7 +20,9 @@ import {
   setIdleAutoPauseMin,
   setMode,
   setPrivacyAgreed,
+  setShowDebugOverlay,
   setStorageBridge,
+  setWearerSpeakerId,
   setWorkerToken,
   setWorkerUrl,
 } from './storage'
@@ -71,6 +76,49 @@ let cachedBatteryLevel: number | undefined
 // One-shot reason string shown on the idle screen after auto-pause.
 // Cleared when the user manually re-engages the mic.
 let autoPausedReason = ''
+
+// v0.4.0 settings — hydrated from storage on bootstrap.
+let showDebugOverlay = false  // diagnostic stats line on glasses
+let wearerSpeakerId = DEFAULT_WEARER_SPEAKER_ID  // -1 = none / no filter
+
+// v0.4.0 transcript display: instead of replacing lastTranscript with
+// each chunk's text (which made earlier words vanish before the user
+// could read them), we accumulate per-speaker turns. Each entry stays
+// visible for SCROLLBACK_WINDOW_MS, then ages out. Display shows the
+// last few turns concatenated, capped to display width.
+interface ConversationTurn {
+  speaker: number
+  text: string
+  ts: number
+}
+const conversation: ConversationTurn[] = []
+const SCROLLBACK_WINDOW_MS = 30_000  // 30s of recent turns
+const MAX_DISPLAYED_TURNS = 4
+function pruneConversation(): void {
+  const cutoff = Date.now() - SCROLLBACK_WINDOW_MS
+  while (conversation.length > 0 && conversation[0]!.ts < cutoff) {
+    conversation.shift()
+  }
+  while (conversation.length > MAX_DISPLAYED_TURNS * 2) {
+    conversation.shift()
+  }
+}
+function appendToConversation(speaker: number, text: string): void {
+  // Same-speaker continuation? Append to the existing turn instead of
+  // creating a new one so words stream in cleanly until they switch.
+  const last = conversation[conversation.length - 1]
+  if (last && last.speaker === speaker) {
+    last.text = `${last.text} ${text}`.trim()
+    last.ts = Date.now()
+  } else {
+    conversation.push({ speaker, text, ts: Date.now() })
+  }
+  pruneConversation()
+}
+function speakerLabel(id: number): string {
+  // 0→A, 1→B, 2→C, ... — readable on the small display.
+  return String.fromCharCode(65 + Math.max(0, Math.min(25, id)))
+}
 
 // Phone-side fetch debug log. Captures every /transcribe + /suggest
 // call so we can see exactly what URL / status / error is happening
@@ -182,10 +230,32 @@ root.innerHTML = `
 
     <section>
       <h2 style="font-size: 1.1em; margin: 1.5rem 0 .5rem 0;">Behavior</h2>
-      <div style="display: grid; gap: .25rem; max-width: 520px;">
+      <div style="display: grid; gap: .5rem; max-width: 520px;">
         <label>Auto-pause after idle (minutes; 0 disables) <input id="idle-auto-pause-min" type="number" min="0" step="1" style="padding: .35rem; width: 6em; box-sizing: border-box;" /></label>
-        <button id="save-idle" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">Save</button>
-        <p id="idle-status" style="color: #2a2; font-size: .85em; min-height: 1.2em;"></p>
+        <button id="save-idle" type="button" style="padding: .35rem .7rem; cursor: pointer; max-width: 200px;">Save</button>
+        <p id="idle-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
+
+        <hr style="border: 0; border-top: 1px solid #eee; margin: .5rem 0;" />
+
+        <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
+          <input id="show-debug-overlay" type="checkbox" />
+          Show diagnostic overlay on glasses (audio frames / chunks / errors)
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">Off by default. Turn on when something isn't working and you want to see what's happening on-glasses.</p>
+
+        <hr style="border: 0; border-top: 1px solid #eee; margin: .5rem 0;" />
+
+        <label>Which speaker is you?
+          <select id="wearer-speaker-id" style="padding: .35rem; margin-left: .5rem;">
+            <option value="-1">None / auto-detect (don't filter)</option>
+            <option value="0">Speaker A is me</option>
+            <option value="1">Speaker B is me</option>
+            <option value="2">Speaker C is me</option>
+            <option value="3">Speaker D is me</option>
+          </select>
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">When set, your own speech is shown but excluded from the suggestion prompt — Cue suggests responses TO the other person, not echoes of you. Watch the glasses for [A]/[B]/etc labels in a real conversation, then pick yours.</p>
+        <p id="wearer-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
       </div>
     </section>
 
@@ -232,6 +302,27 @@ const privacyDecline = document.querySelector<HTMLButtonElement>('#privacy-decli
 const idleAutoPauseInput = document.querySelector<HTMLInputElement>('#idle-auto-pause-min')!
 const saveIdleBtn = document.querySelector<HTMLButtonElement>('#save-idle')!
 const idleStatus = document.querySelector<HTMLParagraphElement>('#idle-status')!
+const showDebugOverlayInput = document.querySelector<HTMLInputElement>('#show-debug-overlay')!
+const wearerSpeakerSelect = document.querySelector<HTMLSelectElement>('#wearer-speaker-id')!
+const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-status')!
+
+showDebugOverlayInput.addEventListener('change', async () => {
+  showDebugOverlay = showDebugOverlayInput.checked
+  await setShowDebugOverlay(showDebugOverlay)
+  void paint()
+})
+
+wearerSpeakerSelect.addEventListener('change', async () => {
+  const id = Number.parseInt(wearerSpeakerSelect.value, 10)
+  wearerSpeakerId = Number.isFinite(id) ? id : DEFAULT_WEARER_SPEAKER_ID
+  await setWearerSpeakerId(wearerSpeakerId)
+  wearerStatus.style.color = '#2a2'
+  wearerStatus.textContent = wearerSpeakerId < 0
+    ? 'Auto-detect: no filter applied; suggestions consider all speech.'
+    : `Speaker ${speakerLabel(wearerSpeakerId)} = you. Your lines won't be sent to the suggestion model.`
+  window.setTimeout(() => { wearerStatus.textContent = '' }, 5000)
+  void paint()
+})
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c =>
@@ -330,18 +421,27 @@ function renderGlasses(): string {
   }
   // Live view.
   const lines: string[] = [header, '']
-  if (lastTranscript) {
+  // v0.4.0: render up to MAX_DISPLAYED_TURNS of the rolling conversation
+  // with [A]/[B] speaker labels. Wearer's turns marked "(you)" so the
+  // user knows we're filtering them from the suggestion context.
+  pruneConversation()
+  const recent = conversation.slice(-MAX_DISPLAYED_TURNS)
+  if (recent.length > 0) {
+    for (const turn of recent) {
+      const label = speakerLabel(turn.speaker)
+      const youMarker = turn.speaker === wearerSpeakerId ? ' (you)' : ''
+      lines.push(trunc(`[${label}${youMarker}] ${turn.text}`, 76))
+    }
+  } else if (lastTranscript) {
+    // Mock mode + early frames before any conversation turn lands.
     lines.push(trunc(lastTranscript, 100))
   } else {
     lines.push(proactiveActive ? 'Fresh topics:' : 'Listening…')
   }
-  // Diagnostic stats — only shown in real mode while micOn. Lets the
-  // operator see whether audio frames are flowing from the SDK to the
-  // transport, and whether chunks are reaching the worker. If frames=0
-  // after several seconds of speech, the SDK isn't emitting audioPcm
-  // events; if frames>0 but chunks=0 or chunks-ok=0, the issue is
-  // worker-side.
-  if (isRealMode && transport) {
+  // Diagnostic stats — gated on showDebugOverlay. Default OFF; toggle
+  // on via phone-side "Show diagnostic overlay on glasses." Same info
+  // as before: audio frames flowing, chunk success rate, last error.
+  if (showDebugOverlay && isRealMode && transport) {
     const s = transport.stats()
     lines.push(`audio frames=${s.framesReceived} chunks=${s.chunksFlushed}/${s.chunksOk}ok`)
     if (s.lastError) {
@@ -527,18 +627,41 @@ async function startRealSession(): Promise<void> {
 }
 
 function onTranscriptFrame(e: TranscriptEvent): void {
-  // Show the latest interim transcript to the user. On final, append to
-  // the rolling window we send to the LLM.
-  lastTranscript = e.text
+  // v0.4.0: prefer per-speaker utterances when available so we can show
+  // [A]/[B] labels and exclude the wearer's own words from the suggestion
+  // prompt. Falls back to whole-chunk text when the worker / Deepgram
+  // didn't return utterances (older worker or single-speaker chunk).
+  const turns = e.utterances && e.utterances.length > 0
+    ? e.utterances.map(u => ({ speaker: u.speaker, text: u.text }))
+    : (e.text.trim().length > 0 ? [{ speaker: 0, text: e.text.trim() }] : [])
+
+  // Accumulate into the conversation (same-speaker turns merge so words
+  // stream in until the speaker actually changes).
+  for (const t of turns) {
+    appendToConversation(t.speaker, t.text)
+  }
+
+  // Build the rolling LLM-context buffer EXCLUDING the wearer's lines
+  // (so suggestions are responses TO the other person, not echoes of
+  // what the wearer just said).
   if (e.isFinal) {
-    liveTranscript = trimToSentences(`${liveTranscript} ${e.text}`, TRANSCRIPT_WINDOW_CHARS)
-    if (e.text.trim().length > 0) {
-      lastChunkText = e.text
+    const otherLines = turns
+      .filter(t => wearerSpeakerId < 0 || t.speaker !== wearerSpeakerId)
+      .map(t => t.text)
+      .join(' ')
+    if (otherLines.trim().length > 0) {
+      liveTranscript = trimToSentences(`${liveTranscript} ${otherLines}`, TRANSCRIPT_WINDOW_CHARS)
+      lastChunkText = otherLines
       lastChunkAt = Date.now()
-      lastTranscriptAt = Date.now()
     }
+    // Idle auto-pause is "any speech," not "other-only" — we don't want
+    // a wearer-only chunk to be considered idle.
+    if (e.text.trim().length > 0) lastTranscriptAt = Date.now()
     void maybeRequestSuggestions()
   }
+  // Keep lastTranscript for the (now-deprecated) single-line fallback,
+  // but renderGlasses now reads from `conversation` directly.
+  lastTranscript = e.text
   void paint()
 }
 
@@ -714,6 +837,11 @@ async function bootstrap(): Promise<void> {
   const idleMin = await getIdleAutoPauseMin()
   idleAutoPauseInput.value = String(idleMin)
   idleAutoPauseMs = idleMin * 60_000
+  // Hydrate v0.4.0 toggles.
+  showDebugOverlay = await getShowDebugOverlay()
+  showDebugOverlayInput.checked = showDebugOverlay
+  wearerSpeakerId = await getWearerSpeakerId()
+  wearerSpeakerSelect.value = String(wearerSpeakerId)
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
   transport = createTransport(wUrl, wTok)
