@@ -52,7 +52,7 @@ describe('createTransport', () => {
     if (r.ok) expect(r.suggestions).toEqual(['First', 'Second', 'Third'])
     expect(fetchSpy).toHaveBeenCalledOnce()
     const [url, init] = fetchSpy.mock.calls[0]!
-    expect(url).toBe('https://cue.example.workers.dev/suggest')
+    expect(url).toBe('https://cue.example.workers.dev/suggest?stream=0')
     expect(init?.method).toBe('POST')
     const headers = init?.headers as Record<string, string>
     expect(headers.Authorization).toBe('Bearer secret')
@@ -262,5 +262,74 @@ describe('createTransport', () => {
     const body2 = JSON.parse(fetchSpy.mock.calls[1]![1]!.body as string)
     expect('kbPersonal' in body2).toBe(false)
     expect('kbExtra' in body2).toBe(false)
+  })
+
+  // ─── Phase 3: requestSuggestionsStream ────────────────────────────
+  function streamResponse(chunks: string[], contentType = 'text/plain; charset=utf-8'): Response {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(encoder.encode(c))
+        controller.close()
+      },
+    })
+    return new Response(body, { status: 200, headers: { 'Content-Type': contentType } })
+  }
+
+  it('串流回應：onDelta 遞增累積、結束解析編號清單、streamed=true', async () => {
+    const fetchSpy = vi.fn(async (url: string) => {
+      expect(String(url)).toBe('https://cue.example.workers.dev/suggest?stream=1')
+      return streamResponse(['1. 先講', '結論。\n2. 帶關', '鍵數字。'])
+    })
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const deltas: string[] = []
+    const r = await t.requestSuggestionsStream(
+      { mode: 'work', transcript: '請自我介紹' },
+      { onDelta: acc => deltas.push(acc) },
+    )
+    expect(deltas.length).toBeGreaterThanOrEqual(2)
+    expect(deltas[deltas.length - 1]).toBe('1. 先講結論。\n2. 帶關鍵數字。')
+    for (let i = 1; i < deltas.length; i += 1) {
+      expect(deltas[i]!.startsWith(deltas[i - 1]!)).toBe(true) // 遞增累積
+    }
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.streamed).toBe(true)
+      expect(r.suggestions).toEqual(['先講結論。', '帶關鍵數字。'])
+    }
+  })
+
+  it('回應是 application/json（舊 Worker）→ 不呼叫 onDelta，走舊格式', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, suggestions: ['甲', '乙'] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const deltas: string[] = []
+    const r = await t.requestSuggestionsStream(
+      { mode: 'work', transcript: 'hi' },
+      { onDelta: acc => deltas.push(acc) },
+    )
+    expect(deltas).toEqual([])
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.streamed).toBe(false)
+      expect(r.suggestions).toEqual(['甲', '乙'])
+    }
+  })
+
+  it('串流網路錯誤 → ok:false', async () => {
+    globalThis.fetch = vi.fn(async () => { throw new TypeError('Failed to fetch') }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const r = await t.requestSuggestionsStream({ mode: 'work', transcript: 'hi' }, { onDelta: () => {} })
+    expect(r.ok).toBe(false)
+  })
+
+  it('未設定 Worker → ok:false', async () => {
+    const t = createTransport('', '')
+    const r = await t.requestSuggestionsStream({ mode: 'work', transcript: 'hi' }, { onDelta: () => {} })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/not configured/)
   })
 })

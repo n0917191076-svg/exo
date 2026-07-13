@@ -57,6 +57,7 @@ import { createTransport, setTransportLogger, type CueFetchLog, type CueTranspor
 import {
   appendTurn,
   batteryHeaderSuffix,
+  createRenderThrottle,
   pruneTurns,
   shouldRequestSuggestion,
   speakerLabel,
@@ -125,6 +126,11 @@ let sceneNote = ''
 let modelChoice: ModelChoice = DEFAULT_MODEL
 let answerLength: AnswerLength = DEFAULT_ANSWER_LENGTH
 let langMode: LangMode = DEFAULT_LANG
+
+// Phase 3（Exo）：眼鏡渲染節流器。串流增量最多每 300ms 觸發一次眼鏡
+// 渲染（皆經 even.ts enqueue()）— 高頻 textContainerUpgrade 會弄壞
+// BLE（KNOWN_QUIRKS）。手機 DOM 渲染不受此限。
+const glassesThrottle = createRenderThrottle(300)
 
 // Phase 2（Exo）知識庫 — 內容與每模式掛載表，bootstrap 補水
 let kbPersonal = ''
@@ -197,6 +203,11 @@ root.innerHTML = `
     <h1 style="margin: 0 0 .25rem 0;">Cue <span style="font-size: .55em; color: #7b7b7b; font-weight: 400;">v${__APP_VERSION__}</span></h1>
     <p style="color: #7b7b7b; margin: 0 0 1rem 0;">Helps you say the right thing.</p>
     <p id="status" style="margin: 0 0 1rem 0;">Connecting…</p>
+
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">即時建議</h2>
+      <div id="live-suggestions" style="max-width: 520px; min-height: 3.5em; padding: .5rem; background: #101010; color: #7CFC00; font-family: ui-monospace, monospace; font-size: .9em; white-space: pre-wrap; border-radius: 4px;">（收音中這裡會逐字顯示建議）</div>
+    </section>
 
     <div id="privacy-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 100;">
       <div style="background: #fff; max-width: 520px; padding: 1.5rem; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.3);">
@@ -408,6 +419,7 @@ const wearerSpeakerSelect = document.querySelector<HTMLSelectElement>('#wearer-s
 const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-status')!
 const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
 const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
+const liveSuggestionsEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
 const sceneNoteInput = document.querySelector<HTMLInputElement>('#scene-note')!
 const langSelect = document.querySelector<HTMLSelectElement>('#lang-mode')!
 const modelSelect = document.querySelector<HTMLSelectElement>('#model-choice')!
@@ -897,7 +909,9 @@ async function maybeRequestSuggestions(): Promise<void> {
   sessionSuggestionCount += 1
   try {
     const customPrompt = currentMode === 'custom' ? await getCustomPrompt() : undefined
-    const result = await transport.requestSuggestions({
+    // Phase 3：串流版 — 手機側每個增量即時渲染（DOM 便宜），眼鏡側經
+    // 300ms 節流；舊 Worker 回 JSON 時自動 fallback（不會有 onDelta）。
+    const result = await transport.requestSuggestionsStream({
       mode: currentMode,
       transcript: liveTranscript,
       customPrompt,
@@ -912,8 +926,18 @@ async function maybeRequestSuggestions(): Promise<void> {
       // Phase 2：依當前模式的掛載勾選帶 KB（沒勾＝不帶，省 tokens）
       kbPersonal: kbAttach[currentMode].personal && kbPersonal ? kbPersonal : undefined,
       kbExtra: kbAttach[currentMode].extra && kbExtra ? kbExtra : undefined,
+    }, {
+      onDelta(accumulated) {
+        // 串流中：整段累積文字當單一建議顯示，結束後才切回條列
+        suggestions = [accumulated]
+        liveSuggestionsEl.textContent = accumulated
+        glassesThrottle.push(() => { void paint() })
+      },
     })
     if (result.ok) {
+      // 未決的串流渲染立即出清，再畫最終條列
+      glassesThrottle.flush()
+      liveSuggestionsEl.textContent = result.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')
       suggestions = result.suggestions
       // Track the new suggestions for next-call dedupe.
       for (const s of result.suggestions) {

@@ -129,7 +129,7 @@ function installFakeFetch(opts: FakeFetchOpts): void {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )
     }
-    if (url.endsWith('/suggest')) {
+    if (url.includes('/suggest')) {
       const body = init?.body ? JSON.parse(init.body as string) : null
       opts.calls?.push({ url, method, body })
       return new Response(
@@ -277,7 +277,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(out).toMatch(/\[B\] tell me about the meeting/)
 
     // /suggest payload's transcript field must NOT contain wearer's text.
-    const suggestCalls = calls!.filter(c => c.url.endsWith('/suggest'))
+    const suggestCalls = calls!.filter(c => c.url.includes('/suggest'))
     expect(suggestCalls.length).toBeGreaterThanOrEqual(1)
     const lastSuggest = suggestCalls[suggestCalls.length - 1]!
     const transcript = (lastSuggest.body as { transcript: string }).transcript
@@ -338,5 +338,68 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(fake.lastRender()).toMatch(/\[B \(you\)\] this is me speaking/)
     // And the wearer-speaker-id should have been persisted.
     expect(await fake.runtime.getStorage('cue:wearer-speaker-id:v1')).toBe('1')
+  })
+
+  // ─── Phase 3: 串流建議 — 手機側逐字、結束後條列 ─────────────────
+  it('串流 /suggest：手機側逐字顯示，結束後切回條列並渲染眼鏡', async () => {
+    let suggestHit = false
+    let releaseChunk2: () => void = () => {}
+    const gate = new Promise<void>(r => { releaseChunk2 = r })
+    const encoder = new TextEncoder()
+
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            text: 'tell me about the meeting',
+            utterances: [{ speaker: 1, text: 'tell me about the meeting', confidence: 0.9 }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (u.includes('/suggest')) {
+        expect(u).toContain('stream=1')
+        expect(init?.method).toBe('POST')
+        suggestHit = true
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('1. 先講'))
+            void gate.then(() => {
+              controller.enqueue(encoder.encode('結論。\n2. 帶關鍵數字。'))
+              controller.close()
+            })
+          },
+        })
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(10, 10_000)
+
+    // 等 /suggest 開流 + 第一個 chunk 的 onDelta 落到手機 DOM
+    const deadline = Date.now() + 2_000
+    while (!suggestHit && Date.now() < deadline) await new Promise(r => setTimeout(r, 20))
+    expect(suggestHit).toBe(true)
+    await new Promise(r => setTimeout(r, 40))
+    const liveEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
+    expect(liveEl.textContent).toContain('1. 先講') // 串流中：手機已有部分文字
+
+    // 放行第二個 chunk → 串流結束 → 條列 + 眼鏡渲染
+    releaseChunk2()
+    await new Promise(r => setTimeout(r, 380)) // > 300ms 節流窗，讓 trailing/flush 落定
+    expect(liveEl.textContent).toBe('1. 先講結論。\n2. 帶關鍵數字。')
+    expect(fake.lastRender()).toMatch(/先講結論/)
+    expect(fake.lastRender()).toMatch(/帶關鍵數字/)
   })
 })

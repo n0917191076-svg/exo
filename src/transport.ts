@@ -1,3 +1,5 @@
+import { parseNumberedList } from './utterance'
+
 // Transport layer to the user's personal Cue Worker.
 //
 // All communication goes through fetch() — never WebSocket — because the
@@ -32,30 +34,42 @@ export interface TranscriptEvent {
   utterances: TranscriptUtterance[]
 }
 
+/** /suggest 的請求參數 — 串流與非串流共用。 */
+export interface SuggestParams {
+  mode: string
+  transcript: string
+  customPrompt?: string
+  /** v0.4.2: rolling list of recent suggestions; worker adds a "don't repeat these" instruction to the LLM prompt. */
+  recentSuggestions?: string[]
+  /** Phase 1（Exo）：場景說明，Worker 原樣附進 prompt（【目前場景】…）。 */
+  sceneNote?: string
+  /** Phase 1：Anthropic 模型 id；Worker 端有允許清單把關。 */
+  model?: string
+  /** Phase 1：回答長度 short/medium/long → Worker 轉成字數上限規則。 */
+  length?: string
+  /** Phase 1：zh/en，決定 prompt 語言分支。 */
+  lang?: string
+  /** Phase 2：個人資訊 KB — 只在當前模式勾選掛載時帶。 */
+  kbPersonal?: string
+  /** Phase 2：補充資料 KB — 同上。 */
+  kbExtra?: string
+}
+
 export interface CueTransport {
   ready: boolean
   startMicSession: (onTranscript: (e: TranscriptEvent) => void, onError: (msg: string) => void) => Promise<void>
   sendAudioFrame: (frame: Uint8Array) => void
   endMicSession: () => Promise<void>
-  requestSuggestions: (params: {
-    mode: string
-    transcript: string
-    customPrompt?: string
-    /** v0.4.2: rolling list of recent suggestions; worker adds a "don't repeat these" instruction to the LLM prompt. */
-    recentSuggestions?: string[]
-    /** Phase 1（Exo）：場景說明，Worker 原樣附進 prompt（【目前場景】…）。 */
-    sceneNote?: string
-    /** Phase 1：Anthropic 模型 id；Worker 端有允許清單把關。 */
-    model?: string
-    /** Phase 1：回答長度 short/medium/long → Worker 轉成字數上限規則。 */
-    length?: string
-    /** Phase 1：zh/en，決定 prompt 語言分支。 */
-    lang?: string
-    /** Phase 2：個人資訊 KB — 只在當前模式勾選掛載時帶。 */
-    kbPersonal?: string
-    /** Phase 2：補充資料 KB — 同上。 */
-    kbExtra?: string
-  }) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
+  requestSuggestions: (params: SuggestParams) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
+  /**
+   * Phase 3：串流版 /suggest。onDelta 以「累積全文」回呼（呼叫端只管
+   * 顯示最新狀態）；結束後回解析好的建議陣列。舊 Worker 回 JSON 時
+   * 自動走舊格式（streamed=false，不會呼叫 onDelta）。
+   */
+  requestSuggestionsStream: (
+    params: SuggestParams,
+    cb: { onDelta: (accumulated: string) => void },
+  ) => Promise<{ ok: true; suggestions: string[]; streamed: boolean } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
   stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
 }
@@ -282,7 +296,8 @@ export function createTransport(
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 12_000)
       try {
-        const resp = await fetch(`${baseHttp}/suggest`, {
+        // Phase 3 起 Worker 預設回串流；此非串流路徑明確要求 JSON
+        const resp = await fetch(`${baseHttp}/suggest?stream=0`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${bearerToken}`,
@@ -298,6 +313,53 @@ export function createTransport(
           | { ok: true; suggestions: string[] }
           | { ok: false; error: string }
         return json
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false as const, error: msg }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+    async requestSuggestionsStream(params, { onDelta }) {
+      if (!ready) return { ok: false as const, error: 'Worker not configured' }
+      const ctrl = new AbortController()
+      // 串流上限放寬到 30s — 長答案生成中途斷線比等待更糟
+      const timer = setTimeout(() => ctrl.abort(), 30_000)
+      try {
+        const resp = await fetch(`${baseHttp}/suggest?stream=1`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${bearerToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(params),
+          signal: ctrl.signal,
+        })
+        if (!resp.ok) {
+          return { ok: false as const, error: `Worker HTTP ${resp.status}` }
+        }
+        // 舊 Worker（或 OpenAI fallback）回 JSON — 自動走舊格式
+        const contentType = resp.headers.get('Content-Type') ?? ''
+        if (contentType.includes('json')) {
+          const json = (await resp.json()) as
+            | { ok: true; suggestions: string[] }
+            | { ok: false; error: string }
+          return json.ok ? { ...json, streamed: false as const } : json
+        }
+        if (!resp.body) {
+          return { ok: false as const, error: 'no response body' }
+        }
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let accumulated = ''
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          accumulated += decoder.decode(value, { stream: true })
+          if (accumulated.length > 0) onDelta(accumulated)
+        }
+        accumulated += decoder.decode() // flush 殘餘 multi-byte
+        return { ok: true as const, suggestions: parseNumberedList(accumulated), streamed: true as const }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { ok: false as const, error: msg }

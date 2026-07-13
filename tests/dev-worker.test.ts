@@ -61,8 +61,8 @@ describe('dev-worker.mjs HTTP contract', () => {
     expect(a.text).not.toBe(b.text)
   })
 
-  it('POST /suggest returns mode-specific suggestions', async () => {
-    const workRes = await fetch(`${baseUrl}/suggest`, {
+  it('POST /suggest?stream=0 returns mode-specific suggestions', async () => {
+    const workRes = await fetch(`${baseUrl}/suggest?stream=0`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'work', transcript: '請自我介紹' }),
@@ -71,7 +71,7 @@ describe('dev-worker.mjs HTTP contract', () => {
     expect(workJson.ok).toBe(true)
     expect(workJson.suggestions).toHaveLength(3)
 
-    const dailyRes = await fetch(`${baseUrl}/suggest`, {
+    const dailyRes = await fetch(`${baseUrl}/suggest?stream=0`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'daily', transcript: '最近好嗎' }),
@@ -82,8 +82,8 @@ describe('dev-worker.mjs HTTP contract', () => {
     expect(dailyJson.suggestions).not.toEqual(workJson.suggestions)
   })
 
-  it('POST /suggest with unknown mode falls back to work', async () => {
-    const r = await fetch(`${baseUrl}/suggest`, {
+  it('POST /suggest?stream=0 with unknown mode falls back to work', async () => {
+    const r = await fetch(`${baseUrl}/suggest?stream=0`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'nonexistent-mode', transcript: 'x' }),
@@ -91,6 +91,20 @@ describe('dev-worker.mjs HTTP contract', () => {
     const json = await r.json()
     expect(json.ok).toBe(true)
     expect(json.suggestions).toHaveLength(3)
+  })
+
+  // ─── Phase 3: 預設串流純文字（模擬 Worker 的 chunked 轉發） ──────
+  it('POST /suggest（預設）以 text/plain 串流出 3 條編號建議', async () => {
+    const r = await fetch(`${baseUrl}/suggest`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'work', transcript: '請自我介紹' }),
+    })
+    expect(r.status).toBe(200)
+    expect(r.headers.get('content-type') ?? '').toContain('text/plain')
+    const text = await r.text()
+    const numbered = text.split('\n').filter(l => /^\d+\.\s/.test(l.trim()))
+    expect(numbered).toHaveLength(3)
   })
 
   it('OPTIONS preflight returns 204 with permissive CORS headers', async () => {

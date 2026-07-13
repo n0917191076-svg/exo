@@ -143,6 +143,26 @@ export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
       const mode = payload.mode ?? 'work'
       const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.work
       if (latencyMs > 0) await new Promise(r => setTimeout(r, latencyMs))
+      // Phase 3：預設模擬 Worker 的 chunked 純文字串流（逐段送出編號
+      // 清單，間隔 ~30ms 模擬逐字）；?stream=0 回舊 JSON。
+      const wantStream = !(req.url ?? '').includes('stream=0')
+      if (wantStream) {
+        logger({ method, url, status: 200, mode, transcript: payload.transcript ?? '', ms: Date.now() - t0, stream: true })
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        })
+        const full = suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')
+        // 切 4 段逐段 write，讓 client 端真的收到多個 chunk
+        const step = Math.ceil(full.length / 4)
+        for (let i = 0; i < full.length; i += step) {
+          res.write(full.slice(i, i + step))
+          await new Promise(r => setTimeout(r, 30))
+        }
+        return res.end()
+      }
       logger({ method, url, status: 200, mode, transcript: payload.transcript ?? '', ms: Date.now() - t0 })
       return send(res, 200, { ok: true, suggestions })
     }
