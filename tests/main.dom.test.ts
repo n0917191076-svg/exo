@@ -191,4 +191,51 @@ describe('Cue plugin DOM state machine', () => {
     expect(document.querySelector<HTMLSelectElement>('#model-choice')!.value).toBe('claude-sonnet-4-6')
     expect(document.querySelector<HTMLSelectElement>('#answer-length')!.value).toBe('medium')
   })
+
+  // ─── Phase 2: 知識庫 ───────────────────────────────────────────
+  it('KB 文字框從 storage 補水且字數正確顯示', async () => {
+    await bootPlugin({
+      storage: {
+        'cue:privacy-agreed:v1': '1',
+        'cue:kb-personal:v1': '葉家佐，26 歲',
+        'cue:kb-extra:v1': '風控職缺筆記',
+      },
+    })
+    expect(document.querySelector<HTMLTextAreaElement>('#kb-personal')!.value).toBe('葉家佐，26 歲')
+    expect(document.querySelector<HTMLTextAreaElement>('#kb-extra')!.value).toBe('風控職缺筆記')
+    expect(document.querySelector<HTMLElement>('#kb-personal-count')!.textContent).toContain('8/6000')
+    expect(document.querySelector<HTMLElement>('#kb-extra-count')!.textContent).toContain('6/6000')
+  })
+
+  it('儲存 KB 會寫入 storage 並顯示狀態', async () => {
+    await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
+    document.querySelector<HTMLTextAreaElement>('#kb-personal')!.value = '個人背景 v2'
+    document.querySelector<HTMLTextAreaElement>('#kb-extra')!.value = '補充 v2'
+    document.querySelector<HTMLButtonElement>('#save-kb')!.click()
+    await new Promise(r => setTimeout(r, 30))
+    expect(globalThis.localStorage.getItem('cue:kb-personal:v1')).toBe('個人背景 v2')
+    expect(globalThis.localStorage.getItem('cue:kb-extra:v1')).toBe('補充 v2')
+    expect(document.querySelector<HTMLElement>('#kb-status')!.textContent ?? '').toMatch(/已儲存/)
+  })
+
+  it('每模式掛載勾選：預設 work 全勾、daily 只勾個人、custom 全不勾', async () => {
+    await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-work-personal')!.checked).toBe(true)
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-work-extra')!.checked).toBe(true)
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-daily-personal')!.checked).toBe(true)
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-daily-extra')!.checked).toBe(false)
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-custom-personal')!.checked).toBe(false)
+    expect(document.querySelector<HTMLInputElement>('#kb-attach-custom-extra')!.checked).toBe(false)
+  })
+
+  it('改掛載勾選並儲存後寫入 storage', async () => {
+    await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
+    const dailyExtra = document.querySelector<HTMLInputElement>('#kb-attach-daily-extra')!
+    dailyExtra.checked = true
+    document.querySelector<HTMLButtonElement>('#save-kb')!.click()
+    await new Promise(r => setTimeout(r, 30))
+    const saved = JSON.parse(globalThis.localStorage.getItem('cue:kb-attach:v1')!)
+    expect(saved.daily).toEqual({ personal: true, extra: true })
+    expect(saved.work).toEqual({ personal: true, extra: true })
+  })
 })

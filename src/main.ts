@@ -11,8 +11,12 @@ import {
   DEFAULT_LANG,
   DEFAULT_MODEL,
   DEFAULT_WEARER_SPEAKER_ID,
+  KB_MAX_CHARS,
   getAnswerLength,
   getCustomPrompt,
+  getKbAttach,
+  getKbExtra,
+  getKbPersonal,
   getLang,
   getModelChoice,
   getSceneNote,
@@ -26,6 +30,9 @@ import {
   setAnswerLength,
   setCustomPrompt,
   setIdleAutoPauseMin,
+  setKbAttach,
+  setKbExtra,
+  setKbPersonal,
   setLang,
   setMode,
   setModelChoice,
@@ -42,6 +49,7 @@ import {
   setWorkerToken,
   setWorkerUrl,
   type AnswerLength,
+  type KbAttach,
   type LangMode,
   type ModelChoice,
 } from './storage'
@@ -117,6 +125,15 @@ let sceneNote = ''
 let modelChoice: ModelChoice = DEFAULT_MODEL
 let answerLength: AnswerLength = DEFAULT_ANSWER_LENGTH
 let langMode: LangMode = DEFAULT_LANG
+
+// Phase 2（Exo）知識庫 — 內容與每模式掛載表，bootstrap 補水
+let kbPersonal = ''
+let kbExtra = ''
+let kbAttach: Record<ModeId, KbAttach> = {
+  work: { personal: true, extra: true },
+  daily: { personal: true, extra: false },
+  custom: { personal: false, extra: false },
+}
 
 // v0.4.0 transcript display: per-speaker rolling buffer. Pure helpers
 // in utterance.ts (appendTurn / pruneTurns / speakerLabel) — covered
@@ -238,6 +255,36 @@ root.innerHTML = `
         </label>
         <button id="save-convo" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存對話設定</button>
         <p id="convo-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1.5rem 0 .5rem 0;">知識庫</h2>
+      <p style="color: #7b7b7b; font-size: .9em; max-width: 520px; margin: 0 0 .5rem 0;">
+        從 Obsidian 等筆記複製貼上即可。超過上限時保留尾端（新資訊貼在後面）。
+      </p>
+      <div style="display: grid; gap: .5rem; max-width: 520px;">
+        <label>個人資訊 KB <span id="kb-personal-count" style="color: #7b7b7b; font-size: .85em;"></span>
+          <textarea id="kb-personal" rows="6" style="width: 100%; padding: .5rem; box-sizing: border-box; font-size: .9em;" placeholder="背景、經歷、成就、正在準備的東西…"></textarea>
+        </label>
+        <label>補充資料 KB <span id="kb-extra-count" style="color: #7b7b7b; font-size: .85em;"></span>
+          <textarea id="kb-extra" rows="6" style="width: 100%; padding: .5rem; box-sizing: border-box; font-size: .9em;" placeholder="這場面試的公司資料、簡報講稿、會議背景…"></textarea>
+        </label>
+        <div>各模式掛載哪些 KB：</div>
+        <div id="kb-attach-grid" style="display: grid; grid-template-columns: 5em 1fr 1fr; gap: .25rem; align-items: center; font-size: .9em;">
+          <div></div><div style="color: #7b7b7b;">個人資訊</div><div style="color: #7b7b7b;">補充資料</div>
+          <div>工作</div>
+          <label><input id="kb-attach-work-personal" type="checkbox" /></label>
+          <label><input id="kb-attach-work-extra" type="checkbox" /></label>
+          <div>日常</div>
+          <label><input id="kb-attach-daily-personal" type="checkbox" /></label>
+          <label><input id="kb-attach-daily-extra" type="checkbox" /></label>
+          <div>自訂</div>
+          <label><input id="kb-attach-custom-personal" type="checkbox" /></label>
+          <label><input id="kb-attach-custom-extra" type="checkbox" /></label>
+        </div>
+        <button id="save-kb" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存知識庫</button>
+        <p id="kb-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
       </div>
     </section>
 
@@ -386,6 +433,78 @@ saveConvoBtn.addEventListener('click', async () => {
   isRealMode = transport.ready
   convoStatus.textContent = '已儲存。下次收音生效。'
   window.setTimeout(() => { convoStatus.textContent = '' }, 4000)
+})
+
+// ── Phase 2：知識庫 UI ─────────────────────────────────────────
+const kbPersonalInput = document.querySelector<HTMLTextAreaElement>('#kb-personal')!
+const kbExtraInput = document.querySelector<HTMLTextAreaElement>('#kb-extra')!
+const kbPersonalCount = document.querySelector<HTMLSpanElement>('#kb-personal-count')!
+const kbExtraCount = document.querySelector<HTMLSpanElement>('#kb-extra-count')!
+const saveKbBtn = document.querySelector<HTMLButtonElement>('#save-kb')!
+const kbStatus = document.querySelector<HTMLParagraphElement>('#kb-status')!
+
+function kbCheckbox(mode: ModeId, which: 'personal' | 'extra'): HTMLInputElement {
+  return document.querySelector<HTMLInputElement>(`#kb-attach-${mode}-${which}`)!
+}
+
+function renderKbCounts(): void {
+  kbPersonalCount.textContent = `${kbPersonalInput.value.length}/${KB_MAX_CHARS}`
+  kbExtraCount.textContent = `${kbExtraInput.value.length}/${KB_MAX_CHARS}`
+}
+kbPersonalInput.addEventListener('input', renderKbCounts)
+kbExtraInput.addEventListener('input', renderKbCounts)
+
+function renderKbAttach(): void {
+  for (const mode of ['work', 'daily', 'custom'] as ModeId[]) {
+    kbCheckbox(mode, 'personal').checked = kbAttach[mode].personal
+    kbCheckbox(mode, 'extra').checked = kbAttach[mode].extra
+  }
+}
+
+saveKbBtn.addEventListener('click', async () => {
+  // setKbPersonal/Extra 會截尾端 6000 — 存完讀回，讓 UI 反映截斷後的實況
+  await setKbPersonal(kbPersonalInput.value)
+  await setKbExtra(kbExtraInput.value)
+  kbPersonal = await getKbPersonal()
+  kbExtra = await getKbExtra()
+  kbPersonalInput.value = kbPersonal
+  kbExtraInput.value = kbExtra
+  renderKbCounts()
+  for (const mode of ['work', 'daily', 'custom'] as ModeId[]) {
+    kbAttach[mode] = {
+      personal: kbCheckbox(mode, 'personal').checked,
+      extra: kbCheckbox(mode, 'extra').checked,
+    }
+  }
+  await setKbAttach(kbAttach)
+  kbStatus.textContent = '已儲存。'
+  window.setTimeout(() => { kbStatus.textContent = '' }, 4000)
+})
+
+calibrateBtn.addEventListener('click', async () => {
+  await setCalibrating(true)
+  calibratingNow = true
+  calibrateStatus.style.color = '#2a2'
+  calibrateStatus.textContent = 'Listening for your voice — say "this is me" within ~10s.'
+  window.setTimeout(() => { calibrateStatus.textContent = '' }, 12_000)
+})
+
+showDebugOverlayInput.addEventListener('change', async () => {
+  showDebugOverlay = showDebugOverlayInput.checked
+  await setShowDebugOverlay(showDebugOverlay)
+  void paint()
+})
+
+wearerSpeakerSelect.addEventListener('change', async () => {
+  const id = Number.parseInt(wearerSpeakerSelect.value, 10)
+  wearerSpeakerId = Number.isFinite(id) ? id : DEFAULT_WEARER_SPEAKER_ID
+  await setWearerSpeakerId(wearerSpeakerId)
+  wearerStatus.style.color = '#2a2'
+  wearerStatus.textContent = wearerSpeakerId < 0
+    ? 'Auto-detect: no filter applied; suggestions consider all speech.'
+    : `Speaker ${speakerLabel(wearerSpeakerId)} = you. Your lines won't be sent to the suggestion model.`
+  window.setTimeout(() => { wearerStatus.textContent = '' }, 5000)
+  void paint()
 })
 
 function escapeHtml(s: string): string {
@@ -790,6 +909,9 @@ async function maybeRequestSuggestions(): Promise<void> {
       model: modelChoice,
       length: answerLength,
       lang: langMode,
+      // Phase 2：依當前模式的掛載勾選帶 KB（沒勾＝不帶，省 tokens）
+      kbPersonal: kbAttach[currentMode].personal && kbPersonal ? kbPersonal : undefined,
+      kbExtra: kbAttach[currentMode].extra && kbExtra ? kbExtra : undefined,
     })
     if (result.ok) {
       suggestions = result.suggestions
@@ -1024,6 +1146,14 @@ async function bootstrap(): Promise<void> {
   modelSelect.value = modelChoice
   answerLengthSelect.value = answerLength
   langSelect.value = langMode
+  // Phase 2 KB 補水
+  kbPersonal = await getKbPersonal()
+  kbExtra = await getKbExtra()
+  kbAttach = await getKbAttach()
+  kbPersonalInput.value = kbPersonal
+  kbExtraInput.value = kbExtra
+  renderKbCounts()
+  renderKbAttach()
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
   transport = createTransport(wUrl, wTok, { lang: langMode })
