@@ -1,173 +1,69 @@
-// Mock suggestion driver — generates fake transcript snippets and per-mode
-// suggestions on a timer. Lets v0.1.0 ship a usable demo without requiring
-// the user to deploy a Worker, supply API keys, or actually record audio.
-//
-// Real audio + STT + LLM pipeline lands in v0.2.0/v0.3.0 (see ROADMAP).
+// Mock 建議驅動 — 沒設定 Worker 時用計時器產生假逐字稿與建議，
+// 讓使用者不用金鑰就能體驗流程。真實 STT + LLM 走 transport.ts。
 
 import type { ModeId } from './modes'
 
 interface MockEntry {
-  transcript: string // what "she" supposedly just said
+  transcript: string // 「對方」剛說的話
   suggestionsByMode: Partial<Record<ModeId, string[]>>
 }
 
-// A small ring of plausible exchanges. Cycle on each tick. Designed to be
-// mode-agnostic on the transcript side; the suggestions vary per mode.
+// 幾組合理的對話輪替。transcript 模式無關；建議依模式不同。
 const SCRIPT: MockEntry[] = [
   {
-    transcript: 'I started painting again last weekend after years off.',
+    transcript: '可以簡單自我介紹一下嗎？',
     suggestionsByMode: {
-      date: [
-        'What pulled you back to it?',
-        'Watercolor or oils these days?',
-        'Where do you paint — a studio?',
+      work: [
+        '好的，我是葉家佐，八年產線督導經驗。',
+        '我拿過輔大 AI 投資競賽第一名。',
+        '我的強項是數據分析與風控。',
       ],
-      'argue-calm': [
-        'I love that you found it again.',
-        'That sounds like it meant a lot.',
+      daily: ['我叫家佐，最近在忙求職。', '平常喜歡研究投資和 AI。'],
+      custom: ['（自訂模式：建議格式由你手機端的 prompt 決定）'],
+    },
+  },
+  {
+    transcript: '你為什麼想轉到金融後台？',
+    suggestionsByMode: {
+      work: [
+        '結論：我要把八年製造管理帶進風控。',
+        '產線異常管理跟風險監控本質相同。',
+        '我已用 Stacking 模型驗證過能力。',
       ],
-      'sales-close': [
-        'Has anything been getting in the way of more time on it?',
-      ],
-      sting: [
-        'Welcome back to the canvas trenches.',
-        'Bob Ross is shaking with pride.',
-      ],
-      listen: [
-        'It sounds like you missed it.',
-        'Tell me more about coming back to it.',
+      daily: ['想換個更能發揮數據能力的環境。', '一直對金融有興趣，也準備很久了。'],
+    },
+  },
+  {
+    transcript: '最近有看什麼有趣的東西嗎？',
+    suggestionsByMode: {
+      work: ['最近在追蹤聯準會利率路徑的研究。'],
+      daily: [
+        '在看量化回測的東西，蠻好玩的。',
+        '最近迷上用 AI 做投資實驗。',
+        '你呢？有什麼推薦的？',
       ],
     },
   },
   {
-    transcript: "I don't know, work has been really overwhelming lately.",
+    // 長建議刻意觸發換行路徑（LINE_WIDTH = 38）
+    transcript: '這個專案時程有點趕，你覺得來得及嗎？',
     suggestionsByMode: {
-      date: [
-        "What's been the toughest part?",
-        'Have you had any chance to unwind?',
-        'Is it project-driven or constant?',
+      work: [
+        '結論：可以，但要先砍掉兩個非核心項目，我建議今天就定優先序。',
+        '依我帶產線的經驗，關鍵是每日站會盯瓶頸工序。',
       ],
-      'argue-calm': [
-        "That sounds heavy. What's weighing the most?",
-        'I hear you. I want to help where I can.',
-      ],
-      'sales-close': [
-        "I've worked with teams in similar spots — what tools are you using now?",
-      ],
-      sting: [
-        'Have you tried turning the job off and on again?',
-      ],
-      listen: [
-        "It sounds like work has been a lot lately.",
-        'Tell me more about what overwhelming looks like.',
-      ],
-    },
-  },
-  {
-    transcript: 'I think I want to take a sabbatical and travel for a few months.',
-    suggestionsByMode: {
-      date: [
-        'Where would you go first?',
-        'Have you been planning this for a while?',
-        'What got you thinking about it now?',
-      ],
-      'argue-calm': [
-        "That's a big step — what's drawing you to it?",
-        'I want to understand what you need from this.',
-      ],
-      'sales-close': [
-        "What would make this the right time vs. waiting?",
-      ],
-      sting: [
-        'Bold move. Try not to come back with a tattoo of yourself.',
-      ],
-      listen: [
-        'It sounds like you really need a break.',
-        'Tell me more about what you imagine doing.',
-      ],
-    },
-  },
-  {
-    transcript: "I can't believe it's already been six months.",
-    suggestionsByMode: {
-      date: [
-        'What stands out most from these past months?',
-        'Time flies when… well, when does it not?',
-        "Where do you see things going from here?",
-      ],
-      'argue-calm': [
-        'A lot has happened. How are you feeling about it?',
-        "I've been thinking about that too.",
-      ],
-      'sales-close': [
-        "Looking back at six months — what's worked, what hasn't?",
-      ],
-      sting: [
-        'Time really doesn\'t care, does it.',
-      ],
-      listen: [
-        'It sounds like a lot has happened in those months.',
-        'Tell me more about what you mean by that.',
-      ],
-      // Custom mode demo — without this entry custom falls back to date-mode
-      // suggestions, which is correct fallback but unhelpful for previewing
-      // what custom-prompt output looks like at glance time.
-      custom: [
-        'Use your phone-side custom prompt to shape what shows here.',
-      ],
-    },
-  },
-  {
-    // Longer suggestions deliberately exercise the v0.3.0 word-wrap path
-    // (LINE_WIDTH = 38). Without an entry like this in mock mode, the wrap
-    // helper only gets exercised in unit tests and never visually validated
-    // during dev preview.
-    transcript: 'I think the meeting tomorrow is the right time to bring it up.',
-    suggestionsByMode: {
-      date: [
-        'What outcome would feel like a win for you?',
-      ],
-      'argue-calm': [
-        'I want to support you — what would help most going in?',
-        'It sounds like this has been on your mind for a while.',
-      ],
-      'sales-close': [
-        'What objection do you expect, and how would you handle it?',
-        'Could we do a quick dry-run together this evening?',
-      ],
-      sting: [
-        'Bring snacks. Confidence loves a good blood-sugar baseline.',
-      ],
-      listen: [
-        'What I hear is that tomorrow feels like the right window.',
-        'Tell me more about why now feels different.',
-      ],
-      custom: [
-        'Custom-mode suggestions follow your phone-side prompt verbatim.',
-      ],
+      daily: ['應該還行啦，先把最重要的做完。', '有點趕，不過拆小一點就還好。'],
+      custom: ['（自訂模式建議照你的 prompt 逐字輸出）'],
     },
   },
 ]
 
 const PROACTIVE_TOPICS_BY_MODE: Partial<Record<ModeId, string[][]>> = {
-  date: [
-    [
-      'Ask: a movie that surprised you lately?',
-      'Ask: any travel coming up?',
-      'Ask: what does your perfect Sunday look like?',
-    ],
-    [
-      'Ask: best meal you\'ve had this year?',
-      'Ask: ever picked up a weird hobby?',
-      'Ask: childhood obsession that stuck around?',
-    ],
+  daily: [
+    ['問：最近有去哪裡玩嗎？', '問：週末都怎麼過？', '聊：最近看的劇或電影。'],
+    ['問：最近工作還順嗎？', '聊：分享一件今天的小事。'],
   ],
-  custom: [
-    [
-      'Ask the other person an open-ended question.',
-      'Share a small detail from your day.',
-    ],
-  ],
+  custom: [['問對方一個開放式問題。', '分享一件你今天遇到的小事。']],
 }
 
 let scriptIdx = 0
@@ -178,7 +74,7 @@ export function nextMockExchange(mode: ModeId): { transcript: string; suggestion
   scriptIdx += 1
   const suggestions =
     entry.suggestionsByMode[mode] ??
-    entry.suggestionsByMode.date ?? // fall back to date-mode suggestions
+    entry.suggestionsByMode.work ?? // 該模式沒配建議時退回 work
     ['(no suggestions configured for this mode)']
   return { transcript: entry.transcript, suggestions }
 }
