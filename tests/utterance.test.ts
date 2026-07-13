@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_TRIGGER,
   batteryHeaderSuffix,
+  createRenderThrottle,
   endsOnSentenceFinalPunct,
+  parseNumberedList,
   shouldRequestSuggestion,
   trimToSentences,
   wrapWords,
@@ -160,5 +162,94 @@ describe('batteryHeaderSuffix', () => {
   it('clamps out-of-range values', () => {
     expect(batteryHeaderSuffix(150)).toBe('◼100%')
     expect(batteryHeaderSuffix(-10)).toBe('○0%')
+  })
+})
+
+// ─── Phase 3: parseNumberedList ────────────────────────────────────
+
+describe('parseNumberedList', () => {
+  it('解析 1. / 2) 兩種編號格式', () => {
+    expect(parseNumberedList('1. 甲\n2) 乙\n3. 丙')).toEqual(['甲', '乙', '丙'])
+  })
+
+  it('忽略前言與雜訊行，只留編號行', () => {
+    const text = '以下是建議：\n1. 先講結論。\n（補充說明）\n2. 帶關鍵數字。'
+    expect(parseNumberedList(text)).toEqual(['先講結論。', '帶關鍵數字。'])
+  })
+
+  it('沒有任何編號行時整段當一條', () => {
+    expect(parseNumberedList('就照實回答即可')).toEqual(['就照實回答即可'])
+  })
+
+  it('空字串回空陣列', () => {
+    expect(parseNumberedList('')).toEqual([])
+    expect(parseNumberedList('   \n  ')).toEqual([])
+  })
+})
+
+// ─── Phase 3: createRenderThrottle（300ms 眼鏡渲染節流） ────────────
+
+describe('createRenderThrottle', () => {
+  // 注入 fake now/schedule，不依賴真實計時器
+  function harness(intervalMs: number) {
+    let t = 0
+    const scheduled: Array<{ at: number; fn: () => void }> = []
+    const throttle = createRenderThrottle(
+      intervalMs,
+      () => t,
+      (fn, ms) => { scheduled.push({ at: t + ms, fn }) },
+    )
+    const advance = (ms: number) => {
+      t += ms
+      for (const s of scheduled.splice(0)) {
+        if (s.at <= t) s.fn()
+        else scheduled.push(s)
+      }
+    }
+    return { throttle, advance, scheduled }
+  }
+
+  it('首次 push 立即執行', () => {
+    const { throttle } = harness(300)
+    let calls = 0
+    throttle.push(() => { calls += 1 })
+    expect(calls).toBe(1)
+  })
+
+  it('間隔內的多次 push 只排一次 trailing，且執行最後一筆', () => {
+    const { throttle, advance, scheduled } = harness(300)
+    const log: string[] = []
+    throttle.push(() => log.push('a'))   // 立即
+    throttle.push(() => log.push('b'))   // 排程
+    throttle.push(() => log.push('c'))   // 覆蓋 b
+    expect(log).toEqual(['a'])
+    expect(scheduled.length).toBe(1)     // 只排一次
+    advance(300)
+    expect(log).toEqual(['a', 'c'])      // trailing 執行最後一筆
+  })
+
+  it('interval 過後再 push 又是立即執行', () => {
+    const { throttle, advance } = harness(300)
+    const log: string[] = []
+    throttle.push(() => log.push('a'))
+    advance(300)
+    throttle.push(() => log.push('b'))
+    expect(log).toEqual(['a', 'b'])
+  })
+
+  it('flush 立即執行未決的最後一筆，之後不重複執行', () => {
+    const { throttle, advance } = harness(300)
+    const log: string[] = []
+    throttle.push(() => log.push('a'))
+    throttle.push(() => log.push('b'))
+    throttle.flush()
+    expect(log).toEqual(['a', 'b'])
+    advance(300)                          // 原排程到期不得重跑 b
+    expect(log).toEqual(['a', 'b'])
+  })
+
+  it('沒有未決項時 flush 是 no-op', () => {
+    const { throttle } = harness(300)
+    expect(() => throttle.flush()).not.toThrow()
   })
 })

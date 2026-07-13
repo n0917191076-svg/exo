@@ -225,3 +225,71 @@ export function batteryHeaderSuffix(level: number | undefined): string {
   const glyph = pct < 20 ? '○' : '◼'
   return `${glyph}${pct}%`
 }
+
+// ── Phase 3：串流顯示的純函式 ──────────────────────────────────────
+
+/**
+ * 把「1. 甲\n2) 乙」解析成 ['甲','乙']。與 Worker 端 parseNumberedList
+ * 同邏輯：只留編號行、容忍 LLM 前言雜訊；完全沒有編號行時整段當一條。
+ * 串流結束後用來把累積全文切回建議陣列。
+ */
+export function parseNumberedList(text: string): string[] {
+  if (text.trim().length === 0) return []
+  const lines = text.split(/\r?\n/)
+  const out: string[] = []
+  for (const line of lines) {
+    const m = line.match(/^\s*\d+[.)]\s+(.+)$/)
+    if (m && m[1]) out.push(m[1].trim())
+  }
+  return out.length > 0 ? out : [text.trim()]
+}
+
+export interface RenderThrottle {
+  /** 立即執行（距上次 ≥interval），否則排一次 trailing-edge 執行「最後一筆」。 */
+  push(fn: () => void): void
+  /** 立即執行未決的最後一筆（串流結束時用），之後原排程不重複執行。 */
+  flush(): void
+}
+
+/**
+ * 眼鏡渲染節流器。串流增量進來時最多每 intervalMs 觸發一次渲染 —
+ * 併發／高頻 textContainerUpgrade 會弄壞 BLE（KNOWN_QUIRKS）。
+ * now/schedule 可注入，讓測試不依賴真實計時器。
+ */
+export function createRenderThrottle(
+  intervalMs: number,
+  now: () => number = Date.now,
+  schedule: (fn: () => void, ms: number) => void = (fn, ms) => { setTimeout(fn, ms) },
+): RenderThrottle {
+  let lastRunAt = -Infinity
+  let pending: (() => void) | null = null
+  let timerArmed = false
+
+  function runPending(): void {
+    timerArmed = false
+    if (!pending) return
+    const fn = pending
+    pending = null
+    lastRunAt = now()
+    fn()
+  }
+
+  return {
+    push(fn) {
+      const t = now()
+      if (t - lastRunAt >= intervalMs) {
+        lastRunAt = t
+        fn()
+        return
+      }
+      pending = fn // 覆蓋前一筆 — 渲染只需要最新狀態
+      if (!timerArmed) {
+        timerArmed = true
+        schedule(runPending, intervalMs - (t - lastRunAt))
+      }
+    },
+    flush() {
+      runPending()
+    },
+  }
+}
