@@ -183,3 +183,56 @@ export async function appendSessionRecord(rec: SessionRecord): Promise<void> {
 export async function clearSessionHistory(): Promise<void> {
   await writeRaw(KEY_SESSION_HISTORY, JSON.stringify([]))
 }
+
+// ── Phase 1（Exo）：場景說明 / 模型 / 回答長度 / 語言 ──────────────
+// 皆為手機端設定，key 沿用 cue: 前綴避免舊資料失聯。
+
+const KEY_SCENE_NOTE = 'cue:scene-note:v1'
+const KEY_MODEL = 'cue:model:v1'
+const KEY_ANSWER_LENGTH = 'cue:answer-length:v1'
+const KEY_LANG = 'cue:lang:v1'
+
+export type ModelChoice = 'claude-haiku-4-5' | 'claude-sonnet-4-6'
+export type AnswerLength = 'short' | 'medium' | 'long'
+export type LangMode = 'zh' | 'en'
+
+export const DEFAULT_MODEL: ModelChoice = 'claude-sonnet-4-6'
+export const DEFAULT_ANSWER_LENGTH: AnswerLength = 'medium'
+export const DEFAULT_LANG: LangMode = 'zh'
+
+const MODEL_CHOICES: ModelChoice[] = ['claude-haiku-4-5', 'claude-sonnet-4-6']
+const ANSWER_LENGTHS: AnswerLength[] = ['short', 'medium', 'long']
+const LANG_MODES: LangMode[] = ['zh', 'en']
+
+export async function getSceneNote(): Promise<string> {
+  return (await readRaw(KEY_SCENE_NOTE)) ?? ''
+}
+export async function setSceneNote(note: string): Promise<void> {
+  await writeRaw(KEY_SCENE_NOTE, note)
+}
+
+// 非法儲存值一律回退預設 — 下拉選單理論上擋得住，但儲存層可能被
+// 舊版本或手動改動污染，防禦性驗證便宜。
+export async function getModelChoice(): Promise<ModelChoice> {
+  const raw = await readRaw(KEY_MODEL)
+  return MODEL_CHOICES.includes(raw as ModelChoice) ? (raw as ModelChoice) : DEFAULT_MODEL
+}
+export async function setModelChoice(m: ModelChoice): Promise<void> {
+  await writeRaw(KEY_MODEL, m)
+}
+
+export async function getAnswerLength(): Promise<AnswerLength> {
+  const raw = await readRaw(KEY_ANSWER_LENGTH)
+  return ANSWER_LENGTHS.includes(raw as AnswerLength) ? (raw as AnswerLength) : DEFAULT_ANSWER_LENGTH
+}
+export async function setAnswerLength(l: AnswerLength): Promise<void> {
+  await writeRaw(KEY_ANSWER_LENGTH, l)
+}
+
+export async function getLang(): Promise<LangMode> {
+  const raw = await readRaw(KEY_LANG)
+  return LANG_MODES.includes(raw as LangMode) ? (raw as LangMode) : DEFAULT_LANG
+}
+export async function setLang(l: LangMode): Promise<void> {
+  await writeRaw(KEY_LANG, l)
+}
