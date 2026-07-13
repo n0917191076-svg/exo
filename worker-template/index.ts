@@ -34,13 +34,21 @@ interface Env {
 // produces a runtime TypeError ("Fetch API cannot load: wss://...") that
 // returns HTTP 500 to the client.
 const DEEPGRAM_WS = 'https://api.deepgram.com/v1/listen?model=nova-2&interim_results=true&encoding=linear16&sample_rate=16000&channels=1'
-// Batch (HTTP) Deepgram endpoint used by /transcribe — same model, no
-// interim results since each call gets one chunk.
+// Batch (HTTP) Deepgram endpoint used by /transcribe — no interim results
+// since each call gets one chunk.
 //   diarize=true        → adds speaker:N per word (so plugin can tell
 //                          who is talking — wearer vs other person)
 //   utterances=true     → groups words into speaker turns with start/end
 //   smart_format=true   → cleaner punctuation, numbers, dates
-const DEEPGRAM_HTTP = 'https://api.deepgram.com/v1/listen?model=nova-2&punctuate=true&diarize=true&utterances=true&smart_format=true'
+// Phase 1（Exo）：nova-3 自 2026-03 起支援繁中（zh-TW）；diarization 為
+// 語言無關。lang 由 /transcribe 的 ?lang= query 帶入（body 是 raw PCM，
+// 塞不了 JSON 欄位）。若實測 nova-3 中文品質不佳，退 nova-2（同樣支援 zh-TW）。
+const DEEPGRAM_HTTP_BASE =
+  'https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&diarize=true&utterances=true&smart_format=true'
+
+function deepgramHttpUrl(lang: 'zh' | 'en'): string {
+  return `${DEEPGRAM_HTTP_BASE}&language=${lang === 'en' ? 'en' : 'zh-TW'}`
+}
 
 const SAMPLE_RATE = 16000
 
@@ -104,8 +112,9 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     // < ~50ms of audio at 16k. Don't burn quota on near-empty chunks.
     return jsonResponse(200, { ok: true, text: '' })
   }
+  const lang = new URL(request.url).searchParams.get('lang') === 'en' ? ('en' as const) : ('zh' as const)
   const wav = wavWrap(pcm)
-  const dgRes = await fetch(DEEPGRAM_HTTP, {
+  const dgRes = await fetch(deepgramHttpUrl(lang), {
     method: 'POST',
     headers: {
       Authorization: `Token ${env.DEEPGRAM_API_KEY}`,
@@ -163,6 +172,10 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     transcript?: string
     customPrompt?: string
     recentSuggestions?: string[]
+    sceneNote?: string
+    model?: string
+    length?: string
+    lang?: string
   }
   try {
     body = (await request.json()) as typeof body
@@ -175,16 +188,37 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   // v0.4.2: client passes its rolling list of recent suggestions; we
   // append a "don't repeat these" instruction to the system prompt so
   // the LLM doesn't re-surface the same phrasing.
-  const baseSystem = body.customPrompt?.trim() || systemPromptForMode(body.mode ?? 'date')
+  const baseSystem = body.customPrompt?.trim() || systemPromptForMode(body.mode ?? 'work')
   const recent = (body.recentSuggestions ?? []).filter(s => typeof s === 'string').slice(-12)
   const dedupeNote = recent.length > 0
     ? `\n\nDO NOT repeat any of these recent suggestions verbatim or near-verbatim — find a different angle:\n${recent.map(s => `- ${s}`).join('\n')}`
     : ''
-  const systemPrompt = baseSystem + dedupeNote
+
+  // Phase 1：場景說明 → 長度規則 → 語言分支，依序附加在 system prompt 後
+  const lang = body.lang === 'en' ? ('en' as const) : ('zh' as const)
+  const sceneBlock = body.sceneNote?.trim()
+    ? `\n\n【目前場景】${body.sceneNote.trim()}`
+    : ''
+  const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
+    short: { zh: '每條建議 ≤10 個字。', en: 'Each suggestion must be at most 10 words.' },
+    medium: { zh: '每條建議 ≤20 個字。', en: 'Each suggestion must be at most 20 words.' },
+    long: { zh: '每條建議 ≤40 個字。', en: 'Each suggestion must be at most 40 words.' },
+  }
+  const lengthRule = LENGTH_RULES[body.length ?? 'medium'] ?? LENGTH_RULES.medium!
+  const lengthBlock = `\n\n${lang === 'en' ? lengthRule.en : lengthRule.zh}`
+  // 英文模式：翻譯必須放第 1 條編號項，否則會被 parseNumberedList 濾掉
+  const langBlock = lang === 'en'
+    ? '\n\n對方說的是英文。輸出格式：第 1 條必須是「譯：<對方那句話的中文翻譯>」；' +
+      '第 2、3 條為英文回答建議，用簡單詞彙（CEFR B1 以內），使用者可直接照念。'
+    : ''
+  const systemPrompt = baseSystem + sceneBlock + lengthBlock + langBlock + dedupeNote
+
+  // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
+  const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
 
   // Anthropic-first; OpenAI fallback if no Anthropic key is set.
   if (env.ANTHROPIC_API_KEY) {
-    return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript)
+    return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
   }
   if (env.OPENAI_API_KEY) {
     return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript)
@@ -192,25 +226,30 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   return jsonResponse(500, { ok: false, error: 'no LLM API key configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' })
 }
 
+const ALLOWED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6']
+const DEFAULT_MODEL = 'claude-sonnet-4-6'
+
+
 function systemPromptForMode(mode: string): string {
-  // Mirror of src/modes.ts on the plugin side. Kept simple — the plugin
-  // sends the full prompt for custom mode, but we ship default fallbacks
-  // here in case the plugin doesn't pass one.
+  // plugin 端 src/modes.ts 的鏡像 — plugin 沒帶 customPrompt 時的保底。
   const PROMPTS: Record<string, string> = {
-    date: 'You are a warm, curious conversation coach. Suggest 2-3 natural responses or questions the wearer could say next. Each under 12 words. Numbered list, no preamble.',
-    'argue-calm': 'You are a couples therapist. Suggest 2-3 short responses that validate the other person\'s feelings. Avoid "but". Each under 12 words. Numbered list, no preamble.',
-    'sales-close': 'You are a sales coach. Suggest 2-3 short responses to any objection raised. Each under 14 words. Numbered list, no preamble.',
-    sting: 'Suggest 2-3 sharp but friendly comebacks under 12 words. Nothing mean. Numbered list, no preamble.',
-    listen: 'Suggest 2-3 short reflective listening prompts ("what I hear is...", "tell me more about..."). Under 14 words. Numbered list, no preamble.',
-    interview: 'You are coaching the wearer through being interviewed. Based on the interviewer\'s most recent question, suggest 2-3 short structured answers (under 20 words). Lead with the headline; STAR framing only when natural. Avoid hedging language. Numbered list, no preamble.',
+    work:
+      '你是使用者的即時對話助手，情境是工作場合（面試、會議、簡報），目標是顯得專業：回答精準、有結構。' +
+      '不用猶疑語（「我覺得」「可能」「應該吧」這類）；STAR 結構僅在自然時使用。' +
+      '給 2–3 條建議，每條能直接照著念；先講結論；不加前言；編號清單輸出，每條一行。',
+    daily:
+      '你是使用者的即時對話助手，情境是日常閒聊，口語、放鬆、像朋友聊天。' +
+      '給 2–3 條建議，每條能直接照著念；先講結論；不加前言；編號清單輸出，每條一行。',
   }
-  return PROMPTS[mode] ?? PROMPTS.date!
+  return PROMPTS[mode] ?? PROMPTS.work!
 }
 
 async function callAnthropic(
   apiKey: string,
   systemPrompt: string,
   transcript: string,
+  model: string,
+  lang: 'zh' | 'en',
 ): Promise<Response> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -220,13 +259,16 @@ async function callAnthropic(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5',
-      max_tokens: 200,
+      model,
+      // 長答案（3 條 ×40 繁中字 ≈ 240 tokens）在 200 會被截斷，放寬到 400
+      max_tokens: 400,
       system: systemPrompt,
       messages: [
         {
           role: 'user',
-          content: `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`,
+          content: lang === 'en'
+            ? `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`
+            : `最近的對話逐字稿（對方說的話）：\n\n「${transcript}」\n\n建議：`,
         },
       ],
     }),

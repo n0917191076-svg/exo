@@ -122,7 +122,7 @@ await run('suggest rejects no-auth with 401', async () => {
   const r = await fetch(`${BASE}/suggest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'date', transcript: 'hi' }),
+    body: JSON.stringify({ mode: 'work', transcript: 'hi' }),
   })
   if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`)
   ok('suggest rejects no-auth with 401')
@@ -132,7 +132,7 @@ await run('suggest rejects wrong-bearer with 401', async () => {
   const r = await fetch(`${BASE}/suggest`, {
     method: 'POST',
     headers: { Authorization: 'Bearer wrong', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'date', transcript: 'hi' }),
+    body: JSON.stringify({ mode: 'work', transcript: 'hi' }),
   })
   if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`)
   ok('suggest rejects wrong-bearer with 401')
@@ -142,7 +142,7 @@ await run('suggest rejects empty transcript with 400', async () => {
   const r = await fetch(`${BASE}/suggest`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'date' }),
+    body: JSON.stringify({ mode: 'work' }),
   })
   if (r.status !== 400) throw new Error(`expected 400, got ${r.status}`)
   ok('suggest rejects empty transcript with 400')
@@ -153,7 +153,7 @@ if (process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY) {
     const r = await fetch(`${BASE}/suggest`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'date', transcript: 'How was your day at work?' }),
+      body: JSON.stringify({ mode: 'work', transcript: 'How was your day at work?' }),
     })
     if (!r.ok) throw new Error(`status ${r.status}`)
     const j = await r.json()
