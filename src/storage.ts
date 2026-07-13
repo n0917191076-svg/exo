@@ -236,3 +236,72 @@ export async function getLang(): Promise<LangMode> {
 export async function setLang(l: LangMode): Promise<void> {
   await writeRaw(KEY_LANG, l)
 }
+
+// ── Phase 2（Exo）：知識庫 ────────────────────────────────────────
+// 兩個 KB 文字框（個人資訊／補充資料）＋每模式掛載表。Evan 的工作流
+// 是 Obsidian 寫好貼上，v1 不做雲端同步。
+
+const KEY_KB_PERSONAL = 'cue:kb-personal:v1'
+const KEY_KB_EXTRA = 'cue:kb-extra:v1'
+const KEY_KB_ATTACH = 'cue:kb-attach:v1'
+
+// 單一 KB 上限。超過時從頭截斷保留尾端 — 新資訊通常貼在後面。
+export const KB_MAX_CHARS = 6000
+
+function tailTruncate(s: string, max: number): string {
+  return s.length > max ? s.slice(s.length - max) : s
+}
+
+export async function getKbPersonal(): Promise<string> {
+  return (await readRaw(KEY_KB_PERSONAL)) ?? ''
+}
+export async function setKbPersonal(s: string): Promise<void> {
+  await writeRaw(KEY_KB_PERSONAL, tailTruncate(s, KB_MAX_CHARS))
+}
+
+export async function getKbExtra(): Promise<string> {
+  return (await readRaw(KEY_KB_EXTRA)) ?? ''
+}
+export async function setKbExtra(s: string): Promise<void> {
+  await writeRaw(KEY_KB_EXTRA, tailTruncate(s, KB_MAX_CHARS))
+}
+
+export interface KbAttach {
+  personal: boolean
+  extra: boolean
+}
+
+// 預設掛載：work 全掛；daily 只掛個人資訊；custom 不掛（使用者自控 prompt）。
+const DEFAULT_KB_ATTACH: Record<ModeId, KbAttach> = {
+  work: { personal: true, extra: true },
+  daily: { personal: true, extra: false },
+  custom: { personal: false, extra: false },
+}
+
+export async function getKbAttach(): Promise<Record<ModeId, KbAttach>> {
+  const raw = await readRaw(KEY_KB_ATTACH)
+  const out: Record<ModeId, KbAttach> = {
+    work: { ...DEFAULT_KB_ATTACH.work },
+    daily: { ...DEFAULT_KB_ATTACH.daily },
+    custom: { ...DEFAULT_KB_ATTACH.custom },
+  }
+  if (!raw) return out
+  try {
+    const parsed = JSON.parse(raw) as Partial<Record<ModeId, Partial<KbAttach>>>
+    // 逐模式逐欄位驗證合併 — 壞 JSON、缺欄、非布林一律回退該欄預設
+    for (const id of ['work', 'daily', 'custom'] as ModeId[]) {
+      const p = parsed?.[id]
+      if (p && typeof p === 'object') {
+        if (typeof p.personal === 'boolean') out[id].personal = p.personal
+        if (typeof p.extra === 'boolean') out[id].extra = p.extra
+      }
+    }
+  } catch {
+    /* 壞 JSON → 全預設 */
+  }
+  return out
+}
+
+export async function setKbAttach(map: Record<ModeId, KbAttach>): Promise<void> {
+  await writeRaw(KEY_KB_ATTACH, JSON.stringify(map))
+}

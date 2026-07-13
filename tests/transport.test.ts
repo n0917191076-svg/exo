@@ -239,4 +239,28 @@ describe('createTransport', () => {
     expect(body.length).toBe('short')
     expect(body.lang).toBe('zh')
   })
+
+  // ─── Phase 2: KB 欄位進 /suggest body ────────────────────────────
+  it('requestSuggestions 帶 kbPersonal/kbExtra 進 body；未帶時欄位不存在', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, suggestions: ['一'] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    await t.requestSuggestions({
+      mode: 'work',
+      transcript: '你有什麼優勢？',
+      kbPersonal: '八年產線督導；AI 投資競賽第一名',
+      kbExtra: '目標職缺：風控分析',
+    })
+    const body1 = JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)
+    expect(body1.kbPersonal).toBe('八年產線督導；AI 投資競賽第一名')
+    expect(body1.kbExtra).toBe('目標職缺：風控分析')
+
+    await t.requestSuggestions({ mode: 'custom', transcript: 'hi' })
+    const body2 = JSON.parse(fetchSpy.mock.calls[1]![1]!.body as string)
+    expect('kbPersonal' in body2).toBe(false)
+    expect('kbExtra' in body2).toBe(false)
+  })
 })

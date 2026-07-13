@@ -51,6 +51,10 @@ export interface CueTransport {
     length?: string
     /** Phase 1：zh/en，決定 prompt 語言分支。 */
     lang?: string
+    /** Phase 2：個人資訊 KB — 只在當前模式勾選掛載時帶。 */
+    kbPersonal?: string
+    /** Phase 2：補充資料 KB — 同上。 */
+    kbExtra?: string
   }) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
   stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
@@ -273,7 +277,7 @@ export function createTransport(
     stats() {
       return { framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError }
     },
-    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang }) {
+    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra }) {
       if (!ready) return { ok: false as const, error: 'Worker not configured' }
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 12_000)
@@ -284,7 +288,7 @@ export function createTransport(
             Authorization: `Bearer ${bearerToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang }),
+          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra }),
           signal: ctrl.signal,
         })
         if (!resp.ok) {

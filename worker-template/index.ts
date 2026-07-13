@@ -176,6 +176,8 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     model?: string
     length?: string
     lang?: string
+    kbPersonal?: string
+    kbExtra?: string
   }
   try {
     body = (await request.json()) as typeof body
@@ -199,6 +201,14 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   const sceneBlock = body.sceneNote?.trim()
     ? `\n\n【目前場景】${body.sceneNote.trim()}`
     : ''
+  // Phase 2：KB 區塊。plugin 端已依模式勾選過濾＋截斷；這裡防禦性再截
+  // 尾端 6000（plugin 傳什麼不可信）。組裝順序：模式 prompt → 場景 →
+  // KB → （長度/語言規則）→ 去重；逐字稿在 user message。
+  const kbPersonal = tailTruncate((body.kbPersonal ?? '').trim(), 6000)
+  const kbExtra = tailTruncate((body.kbExtra ?? '').trim(), 6000)
+  const kbBlock =
+    (kbPersonal ? `\n\n【個人資訊】\n${kbPersonal}` : '') +
+    (kbExtra ? `\n\n【補充資料】\n${kbExtra}` : '')
   const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
     short: { zh: '每條建議 ≤10 個字。', en: 'Each suggestion must be at most 10 words.' },
     medium: { zh: '每條建議 ≤20 個字。', en: 'Each suggestion must be at most 20 words.' },
@@ -211,7 +221,7 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     ? '\n\n對方說的是英文。輸出格式：第 1 條必須是「譯：<對方那句話的中文翻譯>」；' +
       '第 2、3 條為英文回答建議，用簡單詞彙（CEFR B1 以內），使用者可直接照念。'
     : ''
-  const systemPrompt = baseSystem + sceneBlock + lengthBlock + langBlock + dedupeNote
+  const systemPrompt = baseSystem + sceneBlock + kbBlock + lengthBlock + langBlock + dedupeNote
 
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
@@ -229,6 +239,10 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
 const ALLOWED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6']
 const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
+// KB 超長時從頭截斷保留尾端（新資訊通常貼在後面）。
+function tailTruncate(s: string, max: number): string {
+  return s.length > max ? s.slice(s.length - max) : s
+}
 
 function systemPromptForMode(mode: string): string {
   // plugin 端 src/modes.ts 的鏡像 — plugin 沒帶 customPrompt 時的保底。
