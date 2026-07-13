@@ -43,6 +43,14 @@ export interface CueTransport {
     customPrompt?: string
     /** v0.4.2: rolling list of recent suggestions; worker adds a "don't repeat these" instruction to the LLM prompt. */
     recentSuggestions?: string[]
+    /** Phase 1（Exo）：場景說明，Worker 原樣附進 prompt（【目前場景】…）。 */
+    sceneNote?: string
+    /** Phase 1：Anthropic 模型 id；Worker 端有允許清單把關。 */
+    model?: string
+    /** Phase 1：回答長度 short/medium/long → Worker 轉成字數上限規則。 */
+    length?: string
+    /** Phase 1：zh/en，決定 prompt 語言分支。 */
+    lang?: string
   }) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
   stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
@@ -94,9 +102,16 @@ const CHUNK_MS = 2500
 const CHUNK_BYTES = Math.round((BYTES_PER_SECOND * CHUNK_MS) / 1000)
 const MIN_CHUNK_BYTES = Math.round(BYTES_PER_SECOND * 0.5) // 500ms — below this, skip the call
 
-export function createTransport(workerUrl: string, bearerToken: string): CueTransport {
+export function createTransport(
+  workerUrl: string,
+  bearerToken: string,
+  opts: { lang?: 'zh' | 'en' } = {},
+): CueTransport {
   const baseHttp = workerUrl.replace(/\/$/, '')
   const ready = !!workerUrl && !!bearerToken
+  // Phase 1：lang 決定 Worker 端的 Deepgram language 參數（zh→zh-TW）。
+  // /transcribe 的 body 是 raw PCM，塞不了 JSON 欄位，所以走 query。
+  const lang = opts.lang ?? 'zh'
 
   let onTranscriptCb: ((e: TranscriptEvent) => void) | null = null
   let onErrorCb: ((msg: string) => void) | null = null
@@ -127,7 +142,7 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
     chunksFlushed += 1
     const chunk = pending
     pending = new Uint8Array(0)
-    const url = `${baseHttp}/transcribe`
+    const url = `${baseHttp}/transcribe?lang=${lang}`
     const startedAt = Date.now()
     try {
       // Body as Blob, not raw ArrayBuffer — WKWebView's fetch handles
@@ -258,7 +273,7 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
     stats() {
       return { framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError }
     },
-    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions }) {
+    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang }) {
       if (!ready) return { ok: false as const, error: 'Worker not configured' }
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 12_000)
@@ -269,7 +284,7 @@ export function createTransport(workerUrl: string, bearerToken: string): CueTran
             Authorization: `Bearer ${bearerToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions }),
+          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang }),
           signal: ctrl.signal,
         })
         if (!resp.ok) {

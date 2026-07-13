@@ -183,4 +183,60 @@ describe('createTransport', () => {
     const body = JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)
     expect(body.customPrompt).toBe('You are a butler...')
   })
+
+  // ─── Phase 1: lang 進 /transcribe query、新設定進 /suggest body ────
+  it('flush 的 /transcribe URL 帶 ?lang=', async () => {
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(String(url))
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret', { lang: 'en' })
+    await t.startMicSession(() => {}, () => {})
+    t.sendAudioFrame(new Uint8Array(20_000))
+    await t.endMicSession()
+    const transcribeUrl = urls.find(u => u.includes('/transcribe'))
+    expect(transcribeUrl).toBe('https://cue.example.workers.dev/transcribe?lang=en')
+  })
+
+  it('未指定 lang 時 /transcribe 預設 zh', async () => {
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(String(url))
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    await t.startMicSession(() => {}, () => {})
+    t.sendAudioFrame(new Uint8Array(20_000))
+    await t.endMicSession()
+    expect(urls.find(u => u.includes('/transcribe'))).toContain('?lang=zh')
+  })
+
+  it('requestSuggestions 帶 sceneNote/model/length/lang 進 body', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, suggestions: ['一', '二'] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    await t.requestSuggestions({
+      mode: 'work',
+      transcript: '請自我介紹',
+      sceneNote: '面試：主管面',
+      model: 'claude-haiku-4-5',
+      length: 'short',
+      lang: 'zh',
+    })
+    const body = JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)
+    expect(body.sceneNote).toBe('面試：主管面')
+    expect(body.model).toBe('claude-haiku-4-5')
+    expect(body.length).toBe('short')
+    expect(body.lang).toBe('zh')
+  })
 })

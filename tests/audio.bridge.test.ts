@@ -114,7 +114,7 @@ function installFakeFetch(opts: FakeFetchOpts): void {
       opts.calls?.push({ url, method })
       return new Response('ok', { status: 200 })
     }
-    if (url.endsWith('/transcribe')) {
+    if (url.includes('/transcribe')) {
       const body = init?.body as Blob | undefined
       const bytes = body ? body.size : 0
       opts.calls?.push({ url, method, bytes })
@@ -220,7 +220,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     // 100KB > CHUNK_BYTES (80KB), so the threshold-flush fires once.
     fake.pumpFrames(10, 10_000)
     await new Promise(r => setTimeout(r, 50))
-    const transcribeCalls = calls!.filter(c => c.url.endsWith('/transcribe'))
+    const transcribeCalls = calls!.filter(c => c.url.includes('/transcribe'))
     expect(transcribeCalls).toHaveLength(1)
     expect(transcribeCalls[0]!.bytes).toBeGreaterThanOrEqual(CHUNK_BYTES)
   })
@@ -305,12 +305,12 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     // happens, but trailing flush on mic-off should send it.
     fake.pumpFrames(2, 10_000)
     await new Promise(r => setTimeout(r, 30))
-    const before = calls!.filter(c => c.url.endsWith('/transcribe')).length
+    const before = calls!.filter(c => c.url.includes('/transcribe')).length
     expect(before).toBe(0) // no auto-flush yet
     // Tap again — mic off → trailing flush.
     fake.invokeTap('glasses')
     await new Promise(r => setTimeout(r, 80))
-    const after = calls!.filter(c => c.url.endsWith('/transcribe')).length
+    const after = calls!.filter(c => c.url.includes('/transcribe')).length
     expect(after).toBe(1)
   })
 
