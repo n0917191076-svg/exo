@@ -105,7 +105,7 @@ describe('Cue plugin DOM state machine', () => {
     const list = document.querySelector<HTMLDivElement>('#mode-list')!
     // Each mode is a <label> wrapping a radio input. Count the radios.
     const radios = list.querySelectorAll<HTMLInputElement>('input[type="radio"][name="mode"]')
-    expect(radios.length).toBeGreaterThanOrEqual(6)
+    expect(radios.length).toBe(3)
   })
 
   it('idle-auto-pause input hydrates from storage and persists changes', async () => {
@@ -142,5 +142,53 @@ describe('Cue plugin DOM state machine', () => {
     await new Promise(r => setTimeout(r, 30))
     // -3 is non-finite-or-negative → falls back to default 5
     expect(globalThis.localStorage.getItem('cue:idle-auto-pause-min:v1')).toBe('5')
+  })
+
+  // ─── Phase 1: 對話設定（場景 / 語言 / 模型 / 長度） ────────────────
+  it('對話設定從 storage 補水', async () => {
+    await bootPlugin({
+      storage: {
+        'cue:privacy-agreed:v1': '1',
+        'cue:scene-note:v1': '面試：主管面',
+        'cue:lang:v1': 'en',
+        'cue:model:v1': 'claude-haiku-4-5',
+        'cue:answer-length:v1': 'short',
+      },
+    })
+    expect(document.querySelector<HTMLInputElement>('#scene-note')!.value).toBe('面試：主管面')
+    expect(document.querySelector<HTMLSelectElement>('#lang-mode')!.value).toBe('en')
+    expect(document.querySelector<HTMLSelectElement>('#model-choice')!.value).toBe('claude-haiku-4-5')
+    expect(document.querySelector<HTMLSelectElement>('#answer-length')!.value).toBe('short')
+  })
+
+  it('儲存對話設定會寫入 storage 並顯示狀態', async () => {
+    await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
+    const scene = document.querySelector<HTMLInputElement>('#scene-note')!
+    const lang = document.querySelector<HTMLSelectElement>('#lang-mode')!
+    const model = document.querySelector<HTMLSelectElement>('#model-choice')!
+    const len = document.querySelector<HTMLSelectElement>('#answer-length')!
+    const save = document.querySelector<HTMLButtonElement>('#save-convo')!
+    const status = document.querySelector<HTMLElement>('#convo-status')!
+
+    scene.value = '簡報：季度回顧'
+    lang.value = 'en'
+    model.value = 'claude-haiku-4-5'
+    len.value = 'long'
+    save.click()
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(globalThis.localStorage.getItem('cue:scene-note:v1')).toBe('簡報：季度回顧')
+    expect(globalThis.localStorage.getItem('cue:lang:v1')).toBe('en')
+    expect(globalThis.localStorage.getItem('cue:model:v1')).toBe('claude-haiku-4-5')
+    expect(globalThis.localStorage.getItem('cue:answer-length:v1')).toBe('long')
+    expect(status.textContent ?? '').toMatch(/已儲存/)
+  })
+
+  it('對話設定預設值：zh / sonnet / medium / 空場景', async () => {
+    await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
+    expect(document.querySelector<HTMLInputElement>('#scene-note')!.value).toBe('')
+    expect(document.querySelector<HTMLSelectElement>('#lang-mode')!.value).toBe('zh')
+    expect(document.querySelector<HTMLSelectElement>('#model-choice')!.value).toBe('claude-sonnet-4-6')
+    expect(document.querySelector<HTMLSelectElement>('#answer-length')!.value).toBe('medium')
   })
 })

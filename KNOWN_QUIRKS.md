@@ -100,6 +100,14 @@ Cause: HMR reloads the module that called `bridge.onEvenHubEvent`, but the bridg
 
 **Fix during dev:** `pkill -f evenhub-simulator` and re-launch after meaningful source changes. The pattern is documented at the top of `scripts/regression.mjs` for any project that adopts the e2e regression script.
 
+### Simulator `/api/input` can silently stop delivering gestures while another automation browser is open (WSL)
+
+Symptom set observed on WSL2 + WSLg (software-rendered EGL): `/api/input` returns `{"ok":true}` but the gesture never reaches the page — no `[EvenAppBridge] EvenHub event` log, no state change. Meanwhile the render loop keeps painting normally, so the app looks alive. Also observed in the same degraded state: a spurious tap ~8s after boot (mic turned ON with no gesture event logged).
+
+Reproduced across two fresh sim launches while a Playwright-driven Chromium (MCP browser) held a tab on the same Vite dev server. Closing the Playwright browser and relaunching the sim fixed it immediately (e2e 5/5). Single-trial correlation, not fully root-caused — WSLg resource pressure suspected.
+
+**Workaround:** close other automation browsers (Playwright/Chromium) before running sim e2e; then `pkill -f evenhub-simulator && sleep 2` and relaunch. Don't debug the app first — check this quirk when gestures dispatch but nothing happens and only one sim instance is running.
+
 ### Multiple `evenhub-simulator` instances on same `--automation-port` silently fight
 
 If two sim windows are running with `--automation-port 9899`, only the first responds to gesture API calls. The second logs `Address already in use` to stderr and degrades — but `/api/ping` still returns "pong" from the original. Symptom: gestures appear to dispatch but nothing happens.

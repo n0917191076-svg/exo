@@ -6,9 +6,16 @@ import { connectEvenRuntime, type EvenRuntime, type InputSource, type SwipeDir }
 import { DEFAULT_MODE, MODES, type Mode, type ModeId, modeById, nextMode } from './modes'
 import { nextMockExchange, nextMockProactiveTopics, resetMock } from './mock'
 import {
+  DEFAULT_ANSWER_LENGTH,
   DEFAULT_IDLE_AUTO_PAUSE_MIN,
+  DEFAULT_LANG,
+  DEFAULT_MODEL,
   DEFAULT_WEARER_SPEAKER_ID,
+  getAnswerLength,
   getCustomPrompt,
+  getLang,
+  getModelChoice,
+  getSceneNote,
   getIdleAutoPauseMin,
   getMode,
   getShowDebugOverlay,
@@ -16,9 +23,13 @@ import {
   getWorkerToken,
   getWorkerUrl,
   hasAgreedToPrivacy,
+  setAnswerLength,
   setCustomPrompt,
   setIdleAutoPauseMin,
+  setLang,
   setMode,
+  setModelChoice,
+  setSceneNote,
   setPrivacyAgreed,
   appendSessionRecord,
   clearSessionHistory,
@@ -30,6 +41,9 @@ import {
   setWearerSpeakerId,
   setWorkerToken,
   setWorkerUrl,
+  type AnswerLength,
+  type LangMode,
+  type ModelChoice,
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type TranscriptEvent } from './transport'
 import {
@@ -97,6 +111,12 @@ let calibratingNow = false
 // one entry in the persisted session-history. Resets on each mic-on.
 let sessionStartedAt = 0
 let sessionSuggestionCount = 0
+
+// Phase 1（Exo）設定 — bootstrap 時從 storage 補水
+let sceneNote = ''
+let modelChoice: ModelChoice = DEFAULT_MODEL
+let answerLength: AnswerLength = DEFAULT_ANSWER_LENGTH
+let langMode: LangMode = DEFAULT_LANG
 
 // v0.4.0 transcript display: per-speaker rolling buffer. Pure helpers
 // in utterance.ts (appendTurn / pruneTurns / speakerLabel) — covered
@@ -189,6 +209,36 @@ root.innerHTML = `
     <section>
       <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">Mode</h2>
       <div id="mode-list" style="display: grid; gap: .5rem; max-width: 520px;"></div>
+    </section>
+
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1.5rem 0 .5rem 0;">對話設定</h2>
+      <div style="display: grid; gap: .5rem; max-width: 520px;">
+        <label>目前場景（會原樣附進 prompt）
+          <input id="scene-note" type="text" placeholder="例：面試——金融後台主管面" style="padding: .35rem; width: 100%; box-sizing: border-box;" />
+        </label>
+        <label>語言
+          <select id="lang-mode" style="padding: .35rem; margin-left: .5rem;">
+            <option value="zh">中文</option>
+            <option value="en">英文（譯＋英文建議）</option>
+          </select>
+        </label>
+        <label>模型
+          <select id="model-choice" style="padding: .35rem; margin-left: .5rem;">
+            <option value="claude-sonnet-4-6">Sonnet（預設，聰明）</option>
+            <option value="claude-haiku-4-5">Haiku（快）</option>
+          </select>
+        </label>
+        <label>回答長度
+          <select id="answer-length" style="padding: .35rem; margin-left: .5rem;">
+            <option value="short">短（≤10 字）</option>
+            <option value="medium">中（≤20 字）</option>
+            <option value="long">長（≤40 字）</option>
+          </select>
+        </label>
+        <button id="save-convo" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存對話設定</button>
+        <p id="convo-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
+      </div>
     </section>
 
     <section>
@@ -311,31 +361,31 @@ const wearerSpeakerSelect = document.querySelector<HTMLSelectElement>('#wearer-s
 const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-status')!
 const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
 const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
+const sceneNoteInput = document.querySelector<HTMLInputElement>('#scene-note')!
+const langSelect = document.querySelector<HTMLSelectElement>('#lang-mode')!
+const modelSelect = document.querySelector<HTMLSelectElement>('#model-choice')!
+const answerLengthSelect = document.querySelector<HTMLSelectElement>('#answer-length')!
+const saveConvoBtn = document.querySelector<HTMLButtonElement>('#save-convo')!
+const convoStatus = document.querySelector<HTMLParagraphElement>('#convo-status')!
 
-calibrateBtn.addEventListener('click', async () => {
-  await setCalibrating(true)
-  calibratingNow = true
-  calibrateStatus.style.color = '#2a2'
-  calibrateStatus.textContent = 'Listening for your voice — say "this is me" within ~10s.'
-  window.setTimeout(() => { calibrateStatus.textContent = '' }, 12_000)
-})
-
-showDebugOverlayInput.addEventListener('change', async () => {
-  showDebugOverlay = showDebugOverlayInput.checked
-  await setShowDebugOverlay(showDebugOverlay)
-  void paint()
-})
-
-wearerSpeakerSelect.addEventListener('change', async () => {
-  const id = Number.parseInt(wearerSpeakerSelect.value, 10)
-  wearerSpeakerId = Number.isFinite(id) ? id : DEFAULT_WEARER_SPEAKER_ID
-  await setWearerSpeakerId(wearerSpeakerId)
-  wearerStatus.style.color = '#2a2'
-  wearerStatus.textContent = wearerSpeakerId < 0
-    ? 'Auto-detect: no filter applied; suggestions consider all speech.'
-    : `Speaker ${speakerLabel(wearerSpeakerId)} = you. Your lines won't be sent to the suggestion model.`
-  window.setTimeout(() => { wearerStatus.textContent = '' }, 5000)
-  void paint()
+saveConvoBtn.addEventListener('click', async () => {
+  sceneNote = sceneNoteInput.value
+  langMode = langSelect.value === 'en' ? 'en' : 'zh'
+  modelChoice = modelSelect.value === 'claude-haiku-4-5' ? 'claude-haiku-4-5' : 'claude-sonnet-4-6'
+  answerLength = answerLengthSelect.value === 'short' || answerLengthSelect.value === 'long'
+    ? answerLengthSelect.value
+    : 'medium'
+  await setSceneNote(sceneNote)
+  await setLang(langMode)
+  await setModelChoice(modelChoice)
+  await setAnswerLength(answerLength)
+  // lang 影響 /transcribe 的 ?lang= — 重建 transport 讓下一次收音生效
+  const wUrl = await getWorkerUrl()
+  const wTok = await getWorkerToken()
+  transport = createTransport(wUrl, wTok, { lang: langMode })
+  isRealMode = transport.ready
+  convoStatus.textContent = '已儲存。下次收音生效。'
+  window.setTimeout(() => { convoStatus.textContent = '' }, 4000)
 })
 
 function escapeHtml(s: string): string {
@@ -381,12 +431,8 @@ const SUGGESTION_MAX_LINES = 2
 // which coach they're hearing without re-reading the header. Numbers stay
 // for accessibility ordering.
 const MODE_BULLET: Record<ModeId, string> = {
-  date: '★',
-  'argue-calm': '◇',
-  'sales-close': '▶',
-  sting: '⚡',
-  listen: '●',
-  interview: '▣',
+  work: '▣',
+  daily: '●',
   custom: '◆',
 }
 
@@ -739,6 +785,11 @@ async function maybeRequestSuggestions(): Promise<void> {
       // v0.4.2: send recent suggestions so worker can dedupe — no LLM
       // re-emitting the same advice 3 times in a row.
       recentSuggestions: recentSuggestionsRing.slice(),
+      // Phase 1：場景 / 模型 / 長度 / 語言
+      sceneNote,
+      model: modelChoice,
+      length: answerLength,
+      lang: langMode,
     })
     if (result.ok) {
       suggestions = result.suggestions
@@ -910,7 +961,7 @@ saveWorkerBtn.addEventListener('click', async () => {
   await setWorkerUrl(workerUrlInput.value)
   await setWorkerToken(workerTokenInput.value)
   // Re-initialize transport so the next mic session uses the new config.
-  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim())
+  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim(), { lang: langMode })
   isRealMode = transport.ready
   workerStatus.style.color = '#2a2'
   workerStatus.textContent = isRealMode
@@ -946,8 +997,10 @@ async function bootstrap(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log('[cue:state] dev-mode auto-accepted privacy (production requires real opt-in)')
   }
+  // 舊版本存的模式 id（date/sting/…）已不存在 — 驗證後才採用，
+  // 否則 modeById 會在首次渲染就拋錯。
   const persistedMode = await getMode()
-  if (persistedMode) currentMode = persistedMode
+  if (persistedMode && MODES.some(m => m.id === persistedMode)) currentMode = persistedMode
   customPromptInput.value = await getCustomPrompt()
   const wUrl = await getWorkerUrl()
   const wTok = await getWorkerToken()
@@ -962,9 +1015,18 @@ async function bootstrap(): Promise<void> {
   wearerSpeakerId = await getWearerSpeakerId()
   wearerSpeakerSelect.value = String(wearerSpeakerId)
   calibratingNow = await getCalibrating()
+  // Phase 1 設定補水
+  sceneNote = await getSceneNote()
+  modelChoice = await getModelChoice()
+  answerLength = await getAnswerLength()
+  langMode = await getLang()
+  sceneNoteInput.value = sceneNote
+  modelSelect.value = modelChoice
+  answerLengthSelect.value = answerLength
+  langSelect.value = langMode
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
-  transport = createTransport(wUrl, wTok)
+  transport = createTransport(wUrl, wTok, { lang: langMode })
   isRealMode = transport.ready
   renderModeList()
 

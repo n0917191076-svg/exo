@@ -62,27 +62,27 @@ describe('dev-worker.mjs HTTP contract', () => {
   })
 
   it('POST /suggest returns mode-specific suggestions', async () => {
-    const dateRes = await fetch(`${baseUrl}/suggest`, {
+    const workRes = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'date', transcript: 'how was your day' }),
+      body: JSON.stringify({ mode: 'work', transcript: '請自我介紹' }),
     })
-    const dateJson = await dateRes.json()
-    expect(dateJson.ok).toBe(true)
-    expect(dateJson.suggestions).toHaveLength(3)
+    const workJson = await workRes.json()
+    expect(workJson.ok).toBe(true)
+    expect(workJson.suggestions).toHaveLength(3)
 
-    const argueRes = await fetch(`${baseUrl}/suggest`, {
+    const dailyRes = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'argue-calm', transcript: 'we have a conflict' }),
+      body: JSON.stringify({ mode: 'daily', transcript: '最近好嗎' }),
     })
-    const argueJson = await argueRes.json()
-    expect(argueJson.suggestions).toHaveLength(3)
-    // date and argue-calm fixtures must differ.
-    expect(argueJson.suggestions).not.toEqual(dateJson.suggestions)
+    const dailyJson = await dailyRes.json()
+    expect(dailyJson.suggestions).toHaveLength(3)
+    // work 與 daily fixtures 必須不同。
+    expect(dailyJson.suggestions).not.toEqual(workJson.suggestions)
   })
 
-  it('POST /suggest with unknown mode falls back to date', async () => {
+  it('POST /suggest with unknown mode falls back to work', async () => {
     const r = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },

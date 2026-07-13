@@ -213,13 +213,13 @@ describe('Cue plugin with mocked bridge', () => {
   it('double-tap on glasses while mic off cycles modes', async () => {
     await bootMocked({
       'cue:privacy-agreed:v1': '1',
-      'cue:mode:v1': 'date',
+      'cue:mode:v1': 'work',
     })
-    expect(fake.lastRender()).toMatch(/DATE/)
+    expect(fake.lastRender()).toMatch(/工作/)
     fake.invokeDoubleTap('glasses')
     await new Promise(r => setTimeout(r, 20))
-    // Date is the first mode; cycling should land on Argue calm next.
-    expect(fake.lastRender()).toMatch(/ARGUE CALM/)
+    // work 是第一個模式；循環後應落在 daily（日常）。
+    expect(fake.lastRender()).toMatch(/日常/)
   })
 
   it('foreground re-paints (covers the FOREGROUND_ENTER path)', async () => {

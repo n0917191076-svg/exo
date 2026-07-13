@@ -63,40 +63,20 @@ const TRANSCRIBE_FIXTURES = [
 // worker produces — kept short and shape-correct so the glasses render
 // matches what the user will see in production.
 const SUGGEST_FIXTURES = {
-  date: [
-    'Ask what made today feel long',
-    'Mirror the feeling: "sounds draining"',
-    'Pivot to a lighter topic — weekend plans?',
+  work: [
+    '結論：我有八年產線管理經驗。',
+    '我在 AI 投資競賽拿過第一名。',
+    '我的強項是數據分析與風控。',
   ],
-  'argue-calm': [
-    'Acknowledge: "I hear that mattered to you"',
-    'Ask what outcome would feel right',
-    'Name the shared goal you both want',
-  ],
-  'sales-close': [
-    'Confirm the value they just named',
-    'Ask which of two next steps fits better',
-    'Move to a small commitment first',
-  ],
-  sting: [
-    'Reframe with a quick question back',
-    'Lighten with self-deprecating wit',
-    'Hold ground with one calm sentence',
-  ],
-  listen: [
-    'Reflect the last word they emphasized',
-    'Stay quiet — leave a 3-second pause',
-    'Ask one open-ended question',
-  ],
-  interview: [
-    'Tie answer to a measurable outcome',
-    'Ask what success looks like at 90 days',
-    'Bridge to your relevant experience',
+  daily: [
+    '最近在忙求職，還算充實。',
+    '有在研究投資和 AI 的東西。',
+    '你呢？最近過得怎樣？',
   ],
   custom: [
-    '(custom prompt — first reply)',
-    '(custom prompt — second reply)',
-    '(custom prompt — third reply)',
+    '（自訂 prompt — 第一條回覆）',
+    '（自訂 prompt — 第二條回覆）',
+    '（自訂 prompt — 第三條回覆）',
   ],
 }
 
@@ -134,7 +114,8 @@ export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
   let transcribeIdx = 0
   return createServer(async (req, res) => {
     const t0 = Date.now()
-    const url = req.url ?? '/'
+    // 路由只看 path — Phase 1 起 /transcribe 會帶 ?lang= query
+    const url = (req.url ?? '/').split('?')[0]
     const method = req.method ?? 'GET'
 
     if (method === 'OPTIONS') {
@@ -159,8 +140,8 @@ export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
       const body = await readBody(req)
       let payload = {}
       try { payload = JSON.parse(body.toString('utf8')) } catch { /* ignore */ }
-      const mode = payload.mode ?? 'date'
-      const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.date
+      const mode = payload.mode ?? 'work'
+      const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.work
       if (latencyMs > 0) await new Promise(r => setTimeout(r, latencyMs))
       logger({ method, url, status: 200, mode, transcript: payload.transcript ?? '', ms: Date.now() - t0 })
       return send(res, 200, { ok: true, suggestions })
