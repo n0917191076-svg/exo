@@ -226,8 +226,15 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
 
+  // Phase 3：預設串流（純文字 chunked），?stream=0 走舊 JSON 路徑。
+  // OpenAI fallback 只有非串流 — plugin 以回應 Content-Type 自動判別。
+  const wantStream = new URL(request.url).searchParams.get('stream') !== '0'
+
   // Anthropic-first; OpenAI fallback if no Anthropic key is set.
   if (env.ANTHROPIC_API_KEY) {
+    if (wantStream) {
+      return await callAnthropicStream(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
+    }
     return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
   }
   if (env.OPENAI_API_KEY) {
@@ -326,6 +333,87 @@ async function callOpenAI(
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
   const text = json.choices?.[0]?.message?.content ?? ''
   return jsonResponse(200, { ok: true, suggestions: parseNumberedList(text) })
+}
+
+// Phase 3：串流版 — 向 Anthropic 開 stream:true，把 SSE 的 text_delta
+// 增量以純文字 chunked response 直接轉發。plugin 端累積後自行解析編號
+// 清單。Anthropic 非 200 時尚未開流，安全回 JSON 錯誤。
+async function callAnthropicStream(
+  apiKey: string,
+  systemPrompt: string,
+  transcript: string,
+  model: string,
+  lang: 'zh' | 'en',
+): Promise<Response> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 400,
+      stream: true,
+      system: systemPrompt,
+      messages: [
+        {
+          role: 'user',
+          content: lang === 'en'
+            ? `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`
+            : `最近的對話逐字稿（對方說的話）：\n\n「${transcript}」\n\n建議：`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok || !res.body) {
+    const text = await res.text()
+    return jsonResponse(res.status || 502, { ok: false, error: `anthropic ${res.status}: ${text.slice(0, 200)}` })
+  }
+
+  const { readable, writable } = new TransformStream()
+  const writer = writable.getWriter()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+
+  // 背景消化 SSE：`data: {...}` 行 → content_block_delta.text_delta 寫進流。
+  // 不 await — 先把 readable 交回給 client，首字才能最快上屏。
+  void (async () => {
+    const reader = res.body!.getReader()
+    let buf = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? '' // 最後一行可能不完整，留到下一輪
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6)) as {
+              type?: string
+              delta?: { type?: string; text?: string }
+            }
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+              await writer.write(encoder.encode(evt.delta.text))
+            }
+          } catch {
+            /* 非 JSON 的 data 行（如 [DONE]）— 忽略 */
+          }
+        }
+      }
+    } catch {
+      /* 上游中斷 — 關流讓 client 拿到目前為止的內容 */
+    } finally {
+      try { await writer.close() } catch { /* already closed */ }
+    }
+  })()
+
+  return new Response(readable, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() },
+  })
 }
 
 // Parse "1. foo\n2. bar\n3. baz" into ["foo", "bar", "baz"]. Tolerates

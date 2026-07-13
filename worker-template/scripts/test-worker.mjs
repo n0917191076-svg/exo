@@ -149,8 +149,9 @@ await run('suggest rejects empty transcript with 400', async () => {
 })
 
 if (process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY) {
-  await run('suggest with real LLM returns suggestions', async () => {
-    const r = await fetch(`${BASE}/suggest`, {
+  // Phase 3 起預設回串流純文字；?stream=0 保留舊 JSON 路徑
+  await run('suggest ?stream=0 with real LLM returns JSON suggestions', async () => {
+    const r = await fetch(`${BASE}/suggest?stream=0`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'work', transcript: 'How was your day at work?' }),
@@ -160,8 +161,26 @@ if (process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY) {
     if (!j.ok || !Array.isArray(j.suggestions) || j.suggestions.length === 0) {
       throw new Error(`bad shape: ${JSON.stringify(j).slice(0, 120)}`)
     }
-    ok('suggest with real LLM returns suggestions', `${j.suggestions.length} items`)
+    ok('suggest ?stream=0 with real LLM returns JSON suggestions', `${j.suggestions.length} items`)
   })
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    await run('suggest default streams text/plain', async () => {
+      const r = await fetch(`${BASE}/suggest`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'work', transcript: '請自我介紹一下' }),
+      })
+      if (!r.ok) throw new Error(`status ${r.status}`)
+      const ct = r.headers.get('content-type') ?? ''
+      if (!ct.includes('text/plain')) throw new Error(`expected text/plain, got ${ct}`)
+      const text = await r.text()
+      if (text.trim().length === 0) throw new Error('empty stream body')
+      ok('suggest default streams text/plain', `${text.length} chars`)
+    })
+  } else {
+    skip('suggest default streams text/plain', 'streaming needs ANTHROPIC_API_KEY')
+  }
 } else {
   skip('suggest with real LLM', 'no OPENAI_API_KEY or ANTHROPIC_API_KEY')
 }
