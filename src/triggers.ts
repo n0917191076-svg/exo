@@ -39,11 +39,17 @@ export function gestureMapFor(input: {
   micOn: boolean
   hasAnswer: boolean
   source: 'glasses' | 'ring'
-  gesture: 'tap' | 'double-tap'
+  gesture: 'tap' | 'double-tap' | 'long-press'
   /** 自動收音模式下且距上次 transcript ≥ PROACTIVE_SILENT_MS */
   silentIdle: boolean
 }): TriggerEvent | 'exit' | null {
   const { mode, micOn, hasAnswer, source, gesture, silentIdle } = input
+
+  // 長按＝退出，所有狀態一致（含收音中——隱私逃生）。這是終態退出手勢；
+  // 官方 Device APIs 文件有 LONG_PRESS_EVENT，但 JS SDK（至 0.0.12）尚未
+  // 暴露 — 配接器待 SDK 落地後接上（見 KNOWN_QUIRKS），屆時移除「純待命
+  // 雙擊=exit」的過渡語意。
+  if (gesture === 'long-press') return 'exit'
 
   if (gesture === 'tap') {
     // 自動收音的靜默窗優先 — 此時 mic 常開，單擊語意是「救場」不是關閘門

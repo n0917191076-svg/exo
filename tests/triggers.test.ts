@@ -83,6 +83,20 @@ describe('gestureMapFor — 雙擊', () => {
   })
 })
 
+describe('gestureMapFor — 長按（終態退出手勢；SDK 暴露事件後配接器一行接上）', () => {
+  it('長按＝退出，所有狀態一致（含收音中——隱私逃生）', () => {
+    for (const mode of MODES) {
+      expect(gestureMapFor(base({ mode, gesture: 'long-press' }))).toBe('exit')
+      expect(gestureMapFor(base({ mode, gesture: 'long-press', micOn: true }))).toBe('exit')
+      expect(gestureMapFor(base({ mode, gesture: 'long-press', hasAnswer: true }))).toBe('exit')
+    }
+  })
+
+  it('ring 長按同樣退出（語意全來源一致）', () => {
+    expect(gestureMapFor(base({ gesture: 'long-press', source: 'ring' }))).toBe('exit')
+  })
+})
+
 describe('PROACTIVE_SILENT_MS', () => {
   it('v1 常數為 8000ms（日後可調）', () => {
     expect(PROACTIVE_SILENT_MS).toBe(8_000)
