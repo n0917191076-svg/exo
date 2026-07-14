@@ -6,6 +6,7 @@ import {
   batteryHeaderSuffix,
   createRenderThrottle,
   endsOnSentenceFinalPunct,
+  isQuestionZh,
   parseNumberedList,
   shouldRequestSuggestion,
   trimToSentences,
@@ -251,5 +252,49 @@ describe('createRenderThrottle', () => {
   it('沒有未決項時 flush 是 no-op', () => {
     const { throttle } = harness(300)
     expect(() => throttle.flush()).not.toThrow()
+  })
+})
+
+// ─── Phase 4: 中文問句偵測（自動收音模式的觸發條件） ────────────────
+
+describe('isQuestionZh', () => {
+  it('句尾問號（全形/半形）', () => {
+    expect(isQuestionZh('這個要多少錢？')).toBe(true)
+    expect(isQuestionZh('Is this correct?')).toBe(true)
+  })
+
+  it('句尾「嗎/呢」（含後接標點）', () => {
+    expect(isQuestionZh('你吃飽了嗎')).toBe(true)
+    expect(isQuestionZh('你吃飽了嗎。')).toBe(true)
+    expect(isQuestionZh('為什麼會這樣呢')).toBe(true)
+  })
+
+  it('疑問詞命中', () => {
+    expect(isQuestionZh('你叫什麼名字')).toBe(true)
+    expect(isQuestionZh('這要如何操作')).toBe(true)
+    expect(isQuestionZh('為什麼延誤了')).toBe(true)
+    expect(isQuestionZh('這個怎麼用')).toBe(true)
+    expect(isQuestionZh('總共多少')).toBe(true)
+    expect(isQuestionZh('你在第幾組')).toBe(true)
+    expect(isQuestionZh('哪一間公司')).toBe(true)
+    expect(isQuestionZh('能不能再說一次')).toBe(true)
+    expect(isQuestionZh('可不可以幫我看一下')).toBe(true)
+    expect(isQuestionZh('你是不是新來的')).toBe(true)
+  })
+
+  it('非問句', () => {
+    expect(isQuestionZh('我知道了')).toBe(false)
+    expect(isQuestionZh('好的沒問題')).toBe(false)
+    expect(isQuestionZh('')).toBe(false)
+    expect(isQuestionZh('   ')).toBe(false)
+  })
+
+  it('「幾乎」不誤判為疑問（已知限制的防範）', () => {
+    expect(isQuestionZh('我幾乎完成了')).toBe(false)
+  })
+
+  it('已知限制（v1 接受的誤判）：轉述句含疑問詞會命中', () => {
+    // 「他問我什麼時候到」是轉述不是提問 — v1 純規則無法區分，記錄之
+    expect(isQuestionZh('他問我什麼時候到')).toBe(true)
   })
 })

@@ -244,6 +244,30 @@ export function parseNumberedList(text: string): string[] {
   return out.length > 0 ? out : [text.trim()]
 }
 
+// ── Phase 4：中文問句偵測（自動收音模式的觸發條件） ─────────────────
+
+// 疑問詞（多字詞，誤判率低）。單字「幾/哪」另外處理。
+const QUESTION_WORDS = /什麼|如何|為什麼|怎麼|多少|能不能|可不可以|是不是/
+
+/**
+ * v1 純規則問句偵測：句尾「？/?/嗎/呢」或含疑問詞。
+ * 已知限制（測試有記錄）：轉述句（「他問我什麼時候到」）會誤判命中 —
+ * 自動收音模式多發一次 /suggest 的代價可接受，v1 不做語意判斷。
+ */
+export function isQuestionZh(text: string): boolean {
+  const t = text.trim()
+  if (t.length === 0) return false
+  // 去掉尾端句號/驚嘆號/引號後看最後一個字
+  const stripped = t.replace(/[。．.!！~～\s」』"']+$/, '')
+  if (/[？?]$/.test(t) || /[？?]$/.test(stripped)) return true
+  if (/[嗎呢]$/.test(stripped)) return true
+  if (QUESTION_WORDS.test(t)) return true
+  // 「幾」單字誤判率高（幾乎/幾天前）— 排除「幾乎」後才算
+  if (t.includes('幾') && !t.includes('幾乎')) return true
+  if (t.includes('哪')) return true
+  return false
+}
+
 export interface RenderThrottle {
   /** 立即執行（距上次 ≥interval），否則排一次 trailing-edge 執行「最後一筆」。 */
   push(fn: () => void): void
