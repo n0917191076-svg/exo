@@ -696,10 +696,11 @@ const SUGGESTION_MAX_LINES = 2
 // Per-mode prefix glyph for suggestions — gives the user a visual cue of
 // which coach they're hearing without re-reading the header. Numbers stay
 // for accessibility ordering.
+// 一律用官方認證字元（LVGL 字型保證有，集外字元被靜默丟棄）
 const MODE_BULLET: Record<ModeId, string> = {
-  work: '▣',
+  work: '■',
   daily: '●',
-  custom: '◆',
+  custom: '★',
 }
 
 function emphasizeFirstWord(s: string): string {
@@ -762,8 +763,8 @@ function renderGlasses(): string {
       idleLines.push('')
     }
     idleLines.push(`${isRealMode ? '◉ live' : '◌ mock'} ready`)
-    idleLines.push('[tap] start mic')
-    idleLines.push('[2x] exit')
+    idleLines.push('> 單擊 收音')
+    idleLines.push('> 雙擊 離開')
     return idleLines.join('\n')
   }
   // Live view.
@@ -797,7 +798,7 @@ function renderGlasses(): string {
     }
   }
   lines.push('')
-  lines.push('—'.repeat(20))
+  lines.push('─'.repeat(20)) // 認證字元（em-dash 不在集內）
   if (suggestions.length > 0) {
     const bullet = MODE_BULLET[currentMode] ?? '·'
     const isCustom = currentMode === 'custom'
@@ -813,7 +814,7 @@ function renderGlasses(): string {
     lines.push('(suggestions appear here)')
   }
   lines.push('')
-  lines.push(mode.proactiveSupported ? '[tap] 送出  [2x] 取消  [ring 2x] 話題' : '[tap] 送出  [2x] 取消')
+  lines.push(mode.proactiveSupported ? '> 單擊 送出   > 雙擊 取消   > 戒指雙擊 話題' : '> 單擊 送出   > 雙擊 取消')
   return lines.join('\n')
 }
 

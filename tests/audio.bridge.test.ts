@@ -585,7 +585,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(512)
     expect(out).toContain('第30條建議內容測試字串') // 最新內容永遠可見
     expect(out).not.toContain('第1條建議內容測試字串') // 最舊的被裁
-    expect(out).toContain('…') // 裁切提示
+    expect(out).toContain('▲') // 裁切提示（認證字元）
   })
 
   it('自動收音：final transcript 命中問句 → 立即觸發 /suggest（繞過 debounce）', async () => {

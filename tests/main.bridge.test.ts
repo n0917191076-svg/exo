@@ -163,7 +163,7 @@ describe('Cue plugin with mocked bridge', () => {
     await bootMocked({ 'cue:privacy-agreed:v1': '1' })
     // Bootstrap finished and called even.render at least once with the
     // idle screen. Battery 80 → solid glyph + percent.
-    expect(fake.lastRender()).toMatch(/◼80%/)
+    expect(fake.lastRender()).toMatch(/■80%/)
     expect(fake.lastRender()).toMatch(/mic off/)
   })
 
@@ -309,7 +309,7 @@ describe('Cue plugin with mocked bridge', () => {
     await new Promise(r => setTimeout(r, 60))
     expect(fake.lastRender()).toMatch(/mic off/)
     // cancel — 不保留任何建議
-    expect(fake.lastRender()).toMatch(/suggestions=0|\[tap\] start mic/)
+    expect(fake.lastRender()).toMatch(/> 單擊 收音/) // cancel 後回純待命視圖
   })
 
   it('收音來源：預設把 glasses 傳給 even.startMic', async () => {

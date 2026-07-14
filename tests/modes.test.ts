@@ -6,10 +6,17 @@ describe('mode registry', () => {
     expect(MODES.map(m => m.id)).toEqual(['work', 'daily', 'custom'])
   })
 
-  it('glyph 符合規格：work ▣、daily ●、custom ◆', () => {
-    expect(modeById('work').glyph).toBe('▣')
+  it('glyph 符合規格（官方認證字元集）：work ■、daily ●、custom ★', () => {
+    expect(modeById('work').glyph).toBe('■')
     expect(modeById('daily').glyph).toBe('●')
-    expect(modeById('custom').glyph).toBe('◆')
+    expect(modeById('custom').glyph).toBe('★')
+  })
+
+  it('所有 glyph 都在官方認證 Unicode 集內（LVGL 字型保證有）', () => {
+    const CERTIFIED = new Set([...'━─█▇▆▅▄▃▂▁▲△▶▷▼▽◀◁●○■□★☆╭╮╯╰│♠♣♥♦'])
+    for (const m of MODES) {
+      expect(CERTIFIED.has(m.glyph), `${m.id} glyph ${m.glyph}`).toBe(true)
+    }
   })
 
   it('每個模式必要欄位齊全', () => {

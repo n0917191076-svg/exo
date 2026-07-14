@@ -222,7 +222,8 @@ export function batteryHeaderSuffix(level: number | undefined): string {
   if (typeof level !== 'number' || !Number.isFinite(level)) return ''
   const pct = Math.max(0, Math.min(100, Math.round(level)))
   // Solid block when above 20%, hollow ring under 20% as a visual warning.
-  const glyph = pct < 20 ? '○' : '◼'
+  // ■/○ 皆在官方認證字元集（◼ 不在，可能被 LVGL 字型丟棄）
+  const glyph = pct < 20 ? '○' : '■'
   return `${glyph}${pct}%`
 }
 
@@ -265,7 +266,7 @@ export function fitTailByBytes(lines: string[], maxBytes: number): string[] {
   const total = size(lines.join('\n'))
   if (total <= maxBytes) return lines.slice()
 
-  const ELLIPSIS = '…' // 3 bytes
+  const ELLIPSIS = '▲' // 認證字元（… 不在集內）；語意：上方還有內容。3 bytes
   const out: string[] = []
   let used = size(ELLIPSIS) // 預留裁切提示行
   for (let i = lines.length - 1; i >= 0; i -= 1) {

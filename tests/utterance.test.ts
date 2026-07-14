@@ -156,14 +156,14 @@ describe('batteryHeaderSuffix', () => {
     expect(batteryHeaderSuffix(undefined)).toBe('')
     expect(batteryHeaderSuffix(NaN)).toBe('')
   })
-  it('uses solid glyph above 20%', () => {
-    expect(batteryHeaderSuffix(75)).toBe('◼75%')
+  it('uses solid glyph above 20%（認證字元 ■）', () => {
+    expect(batteryHeaderSuffix(75)).toBe('■75%')
   })
   it('uses warning glyph below 20%', () => {
     expect(batteryHeaderSuffix(12)).toBe('○12%')
   })
   it('clamps out-of-range values', () => {
-    expect(batteryHeaderSuffix(150)).toBe('◼100%')
+    expect(batteryHeaderSuffix(150)).toBe('■100%')
     expect(batteryHeaderSuffix(-10)).toBe('○0%')
   })
 })
@@ -315,7 +315,7 @@ describe('fitTailByBytes', () => {
     // 每行「x」.repeat 產生固定位元組數，方便算
     const lines = ['old-old-old-old', 'mid-mid-mid-mid', 'new-new-new-new']
     const out = fitTailByBytes(lines, 36) // 塞不下三行
-    expect(out[0]).toBe('…')
+    expect(out[0]).toBe('▲') // 認證字元（… 不在 LVGL 認證集，可能被丟）
     expect(out[out.length - 1]).toBe('new-new-new-new')
     expect(out).not.toContain('old-old-old-old')
     expect(bytes(out.join('\n'))).toBeLessThanOrEqual(36)
@@ -333,6 +333,7 @@ describe('fitTailByBytes', () => {
     const long = '甲'.repeat(100) + '結尾'
     const out = fitTailByBytes([long], 30)
     expect(out).toHaveLength(1)
+    expect(out[0]!.startsWith('▲')).toBe(true)
     expect(out[0]!.endsWith('結尾')).toBe(true)
     expect(bytes(out[0]!)).toBeLessThanOrEqual(30)
   })

@@ -26,7 +26,7 @@ export const MODES: Mode[] = [
   {
     id: 'work',
     label: '工作',
-    glyph: '▣',
+    glyph: '■',
     description: '面試、會議、簡報用。回答精準、有結構、顯得專業，可含關鍵數字。',
     systemPrompt:
       '你是使用者的即時對話助手。逐字稿是對方剛說的話，請建議使用者接下來怎麼回應。' +
@@ -52,7 +52,7 @@ export const MODES: Mode[] = [
   {
     id: 'custom',
     label: '自訂',
-    glyph: '◆',
+    glyph: '★',
     description: '用你自己的 system prompt（在手機設定頁填寫）。',
     systemPrompt: '', // 使用者自填；空值時 Worker 端有通用 fallback
     proactiveSupported: true,
