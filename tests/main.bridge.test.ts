@@ -246,6 +246,60 @@ describe('Cue plugin with mocked bridge', () => {
     expect(fake.lastRender()).toMatch(/產線|競賽|風控|結論/) // mock work 建議內容
   })
 
+  it('Phase 4：手機大按鈕按住＝收音、放開＝送出', async () => {
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
+    const btn = document.querySelector<HTMLButtonElement>('#hold-to-talk')!
+    expect(btn).not.toBeNull()
+
+    btn.dispatchEvent(new Event('pointerdown'))
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastRender()).toMatch(/LIVE/)
+
+    btn.dispatchEvent(new Event('pointerup'))
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastRender()).toMatch(/mic off/)
+    // gate-stop 後 mock 建議保留
+    expect(fake.lastRender()).toMatch(/產線|競賽|風控|結論/)
+  })
+
+  it('Phase 4：大按鈕按住中滑出按鈕區＝取消（建議清空）', async () => {
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
+    const btn = document.querySelector<HTMLButtonElement>('#hold-to-talk')!
+    btn.dispatchEvent(new Event('pointerdown'))
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastRender()).toMatch(/LIVE/)
+
+    btn.dispatchEvent(new Event('pointerleave'))
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastRender()).toMatch(/mic off/)
+    // cancel — 不保留任何建議
+    expect(fake.lastRender()).toMatch(/suggestions=0|\[tap\] start mic/)
+  })
+
+  it('Phase 4：媒體鍵 flag 預設關 — 不建立無聲 audio、不註冊 mediaSession', async () => {
+    const setActionHandler = vi.fn()
+    Object.defineProperty(globalThis.navigator, 'mediaSession', {
+      value: { setActionHandler }, configurable: true,
+    })
+    await bootMocked({ 'cue:privacy-agreed:v1': '1' })
+    expect(document.querySelector('#media-key-audio')).toBeNull()
+    expect(setActionHandler).not.toHaveBeenCalled()
+  })
+
+  it('Phase 4：媒體鍵 flag 開 → 建立無聲 loop audio 並註冊 play/pause handler', async () => {
+    const setActionHandler = vi.fn()
+    Object.defineProperty(globalThis.navigator, 'mediaSession', {
+      value: { setActionHandler }, configurable: true,
+    })
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:media-key:v1': '1' })
+    const audio = document.querySelector<HTMLAudioElement>('#media-key-audio')
+    expect(audio).not.toBeNull()
+    expect(audio!.loop).toBe(true)
+    const actions = setActionHandler.mock.calls.map(c => c[0])
+    expect(actions).toContain('play')
+    expect(actions).toContain('pause')
+  })
+
   it('Phase 4：回答顯示中雙擊不退出（誤觸保護）', async () => {
     await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
     fake.invokeTap('glasses')

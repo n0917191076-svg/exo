@@ -28,8 +28,10 @@ import {
   getWorkerUrl,
   hasAgreedToPrivacy,
   setAnswerLength,
+  setAutoListen,
   setCustomPrompt,
   setGatedMode,
+  setMediaKeyFlag,
   setIdleAutoPauseMin,
   setKbAttach,
   setKbExtra,
@@ -41,8 +43,10 @@ import {
   setPrivacyAgreed,
   appendSessionRecord,
   clearSessionHistory,
+  getAutoListen,
   getCalibrating,
   getGatedMode,
+  getMediaKeyFlag,
   loadSessionHistory,
   setCalibrating,
   setShowDebugOverlay,
@@ -56,11 +60,12 @@ import {
   type ModelChoice,
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type TranscriptEvent } from './transport'
-import { gestureMapFor, type TriggerEvent } from './triggers'
+import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
 import {
   appendTurn,
   batteryHeaderSuffix,
   createRenderThrottle,
+  isQuestionZh,
   pruneTurns,
   shouldRequestSuggestion,
   speakerLabel,
@@ -138,7 +143,15 @@ const glassesThrottle = createRenderThrottle(300)
 // Phase 4（Exo）：閘門模式（預設開）— 收音整段視為「對方」，Worker
 // 拿掉 diarize/utterances。extendedText 是「延伸」逐層累積的螢幕全文。
 let gatedMode = true
+// 自動收音（預設關）：持續聽、問句偵測命中即觸發。依賴語者錨定 —
+// /transcribe 走 diarize 路徑（effectiveGated 為 false）。
+let autoListen = false
 let extendedText = ''
+
+// 自動收音開啟時強制 diarize 流程（語者錨定依賴 utterances）
+function effectiveGated(): boolean {
+  return gatedMode && !autoListen
+}
 let extendInFlight = false
 
 // 螢幕上的完整回答（延伸優先；否則把建議組回編號清單）
@@ -223,6 +236,12 @@ root.innerHTML = `
     <h1 style="margin: 0 0 .25rem 0;">Cue <span style="font-size: .55em; color: #7b7b7b; font-weight: 400;">v${__APP_VERSION__}</span></h1>
     <p style="color: #7b7b7b; margin: 0 0 1rem 0;">Helps you say the right thing.</p>
     <p id="status" style="margin: 0 0 1rem 0;">Connecting…</p>
+
+    <section>
+      <button id="hold-to-talk" type="button" style="width: 100%; min-height: 42vh; font-size: 1.6em; font-weight: 700; border: 4px solid #232323; border-radius: 12px; background: #ffe95c; color: #232323; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none;">
+        按住收音<br /><span style="font-size: .6em; font-weight: 400;">放開送出・滑出取消</span>
+      </button>
+    </section>
 
     <section>
       <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">即時建議</h2>
@@ -355,6 +374,18 @@ root.innerHTML = `
         </label>
         <p style="color: #7b7b7b; font-size: .85em; margin: 0;">關閉後退回連續收音＋語者標籤（[A]/[B]）流程。</p>
 
+        <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
+          <input id="auto-listen" type="checkbox" />
+          自動收音模式（安靜場合用）：持續聽，偵測到問句就自動生成建議
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">開啟時走語者標籤流程（略過閘門），沿用 idle 自動暫停避免忘記關。</p>
+
+        <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
+          <input id="media-key" type="checkbox" />
+          媒體鍵戒指（實驗性）：藍牙媒體鍵 play/pause＝收音開/關
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">重新開啟 App 生效。實測可能被宿主 App 擋掉——失敗會記錄並建議改用 R1 戒指。</p>
+
         <hr style="border: 0; border-top: 1px solid #eee; margin: .5rem 0;" />
 
         <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
@@ -449,6 +480,35 @@ const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
 const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
 const liveSuggestionsEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
 
+// Phase 4：手機大按鈕（phone-button TriggerSource）— 按住收音、放開送出、
+// 滑出取消。可盲按：狀態靠底色與文字反映。
+const holdToTalkBtn = document.querySelector<HTMLButtonElement>('#hold-to-talk')!
+let holdActive = false
+function setHoldVisual(on: boolean): void {
+  holdToTalkBtn.style.background = on ? '#e33' : '#ffe95c'
+  holdToTalkBtn.style.color = on ? '#fff' : '#232323'
+  holdToTalkBtn.innerHTML = on
+    ? '● 收音中<br /><span style="font-size: .6em; font-weight: 400;">放開送出・滑出取消</span>'
+    : '按住收音<br /><span style="font-size: .6em; font-weight: 400;">放開送出・滑出取消</span>'
+}
+holdToTalkBtn.addEventListener('pointerdown', () => {
+  if (holdActive || micOn) return
+  holdActive = true
+  setHoldVisual(true)
+  void dispatchTrigger('gate-start')
+})
+holdToTalkBtn.addEventListener('pointerup', () => {
+  if (!holdActive) return
+  holdActive = false
+  setHoldVisual(false)
+  void dispatchTrigger('gate-stop')
+})
+holdToTalkBtn.addEventListener('pointerleave', () => {
+  if (!holdActive) return
+  holdActive = false
+  setHoldVisual(false)
+  void dispatchTrigger('cancel')
+})
 const sceneNoteInput = document.querySelector<HTMLInputElement>('#scene-note')!
 const langSelect = document.querySelector<HTMLSelectElement>('#lang-mode')!
 const modelSelect = document.querySelector<HTMLSelectElement>('#model-choice')!
@@ -470,7 +530,7 @@ saveConvoBtn.addEventListener('click', async () => {
   // lang 影響 /transcribe 的 ?lang= — 重建 transport 讓下一次收音生效
   const wUrl = await getWorkerUrl()
   const wTok = await getWorkerToken()
-  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: effectiveGated() })
   isRealMode = transport.ready
   convoStatus.textContent = '已儲存。下次收音生效。'
   window.setTimeout(() => { convoStatus.textContent = '' }, 4000)
@@ -531,13 +591,27 @@ calibrateBtn.addEventListener('click', async () => {
 })
 
 const gatedModeInput = document.querySelector<HTMLInputElement>('#gated-mode')!
+const autoListenInput = document.querySelector<HTMLInputElement>('#auto-listen')!
+const mediaKeyInput = document.querySelector<HTMLInputElement>('#media-key')!
+mediaKeyInput.addEventListener('change', async () => {
+  await setMediaKeyFlag(mediaKeyInput.checked)
+})
+autoListenInput.addEventListener('change', async () => {
+  autoListen = autoListenInput.checked
+  await setAutoListen(autoListen)
+  const wUrl = await getWorkerUrl()
+  const wTok = await getWorkerToken()
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: effectiveGated() })
+  isRealMode = transport.ready
+  void paint()
+})
 gatedModeInput.addEventListener('change', async () => {
   gatedMode = gatedModeInput.checked
   await setGatedMode(gatedMode)
   // gated 影響 /transcribe query — 重建 transport 讓下一次收音生效
   const wUrl = await getWorkerUrl()
   const wTok = await getWorkerToken()
-  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: effectiveGated() })
   isRealMode = transport.ready
   void paint()
 })
@@ -676,8 +750,8 @@ function renderGlasses(): string {
   if (recent.length > 0) {
     for (const turn of recent) {
       // Phase 4 閘門模式：整段都是對方，不做 [A]/[B] 與 (you) 標記
-      const label = gatedMode ? '對方' : speakerLabel(turn.speaker)
-      const youMarker = !gatedMode && turn.speaker === wearerSpeakerId ? ' (you)' : ''
+      const label = effectiveGated() ? '對方' : speakerLabel(turn.speaker)
+      const youMarker = !effectiveGated() && turn.speaker === wearerSpeakerId ? ' (you)' : ''
       lines.push(trunc(`[${label}${youMarker}] ${turn.text}`, 76))
     }
   } else if (lastTranscript) {
@@ -813,11 +887,48 @@ async function toggleMic(): Promise<void> {
     }
     // Phase 4 閘門語意：gate-stop ＝ 送出。endMicSession 的尾端 flush 已
     // 把最後一段 transcript 收進 liveTranscript — 強制觸發，不等 debounce。
-    if (isRealMode && gatedMode && liveTranscript.trim().length > 0) {
+    if (isRealMode && effectiveGated() && liveTranscript.trim().length > 0) {
       await maybeRequestSuggestions(true)
     }
   }
   await paint()
+}
+
+// Phase 4：媒體鍵戒指（MediaSession 駭法，實驗性 feature flag 預設關）。
+// 播一段無聲循環 <audio> 讓本 WebView 成為系統「正在播放」對象，把
+// 戒指的 play/pause 鍵映射為收音開/關。已知風險（宿主攔截 audio
+// session、與 audioControl(true) 衝突）待實機驗證 — 失敗即記
+// KNOWN_QUIRKS 並關閉此路線改用 R1。
+function silentWavDataUri(): string {
+  // 0.1s 8kHz mono 8-bit 無聲 WAV，程式組出來省得塞一大串 base64 字面值
+  const dataSize = 800
+  const bytes = new Uint8Array(44 + dataSize)
+  const dv = new DataView(bytes.buffer)
+  const ascii = (off: number, str: string) => { for (let i = 0; i < str.length; i++) bytes[off + i] = str.charCodeAt(i) }
+  ascii(0, 'RIFF'); dv.setUint32(4, 36 + dataSize, true); ascii(8, 'WAVE'); ascii(12, 'fmt ')
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true)
+  dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true)
+  ascii(36, 'data'); dv.setUint32(40, dataSize, true)
+  bytes.fill(128, 44) // 8-bit PCM 的靜音是 128
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return `data:audio/wav;base64,${btoa(bin)}`
+}
+
+function setupMediaKeyTrigger(): void {
+  if (!('mediaSession' in navigator)) return
+  const audio = document.createElement('audio')
+  audio.id = 'media-key-audio'
+  audio.loop = true
+  audio.src = silentWavDataUri()
+  document.body.appendChild(audio)
+  try {
+    const pr = audio.play()
+    // 部分環境（jsdom / 舊 WebView）play() 不回 Promise
+    if (pr && typeof pr.catch === 'function') pr.catch(() => { /* 自動播放被擋 — 使用者互動後再試 */ })
+  } catch { /* 同上 */ }
+  navigator.mediaSession.setActionHandler('play', () => { void dispatchTrigger('gate-start') })
+  navigator.mediaSession.setActionHandler('pause', () => { void dispatchTrigger('gate-stop') })
 }
 
 // Phase 4：取消本段收音 — 丟棄 pending 音訊與本段 transcript，不觸發
@@ -1004,7 +1115,7 @@ function onTranscriptFrame(e: TranscriptEvent): void {
   if (e.isFinal) {
     const otherLines = turns
       // Phase 4 閘門模式：整段保證是對方 — 跳過 wearer 過濾
-      .filter(t => gatedMode || wearerSpeakerId < 0 || t.speaker !== wearerSpeakerId)
+      .filter(t => effectiveGated() || wearerSpeakerId < 0 || t.speaker !== wearerSpeakerId)
       .map(t => t.text)
       .join(' ')
     if (otherLines.trim().length > 0) {
@@ -1015,7 +1126,12 @@ function onTranscriptFrame(e: TranscriptEvent): void {
     // Idle auto-pause is "any speech," not "other-only" — we don't want
     // a wearer-only chunk to be considered idle.
     if (e.text.trim().length > 0) lastTranscriptAt = Date.now()
-    void maybeRequestSuggestions()
+    // Phase 4 自動收音：對方的話命中問句偵測 → 立即觸發（繞過 debounce）
+    if (autoListen && otherLines.trim().length > 0 && isQuestionZh(otherLines)) {
+      void maybeRequestSuggestions(true)
+    } else {
+      void maybeRequestSuggestions()
+    }
   }
   // Keep lastTranscript for the (now-deprecated) single-line fallback,
   // but renderGlasses now reads from `conversation` directly.
@@ -1106,7 +1222,7 @@ function handleGesture(gesture: 'tap' | 'double-tap', src: InputSource): void {
     hasAnswer: hasAnswerOnScreen(),
     source: src === 'ring' ? 'ring' : 'glasses',
     gesture,
-    silentIdle: false, // Phase 4 Task 6（自動收音）才會為真
+    silentIdle: autoListen && micOn && Date.now() - lastTranscriptAt >= PROACTIVE_SILENT_MS,
   })
   if (ev === 'exit') {
     if (even) void even.exitApp()
@@ -1249,7 +1365,7 @@ saveWorkerBtn.addEventListener('click', async () => {
   await setWorkerUrl(workerUrlInput.value)
   await setWorkerToken(workerTokenInput.value)
   // Re-initialize transport so the next mic session uses the new config.
-  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim(), { lang: langMode, gated: gatedMode })
+  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim(), { lang: langMode, gated: effectiveGated() })
   isRealMode = transport.ready
   workerStatus.style.color = '#2a2'
   workerStatus.textContent = isRealMode
@@ -1306,6 +1422,12 @@ async function bootstrap(): Promise<void> {
   // Phase 4：閘門模式補水（預設開）
   gatedMode = await getGatedMode()
   gatedModeInput.checked = gatedMode
+  autoListen = await getAutoListen()
+  autoListenInput.checked = autoListen
+  // Phase 4：媒體鍵 flag（預設關）— 開了才啟動 MediaSession 路線
+  const mediaKeyOn = await getMediaKeyFlag()
+  mediaKeyInput.checked = mediaKeyOn
+  if (mediaKeyOn) setupMediaKeyTrigger()
   // Phase 1 設定補水
   sceneNote = await getSceneNote()
   modelChoice = await getModelChoice()
@@ -1325,7 +1447,7 @@ async function bootstrap(): Promise<void> {
   renderKbAttach()
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
-  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: effectiveGated() })
   isRealMode = transport.ready
   renderModeList()
 

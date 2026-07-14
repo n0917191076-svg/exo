@@ -517,6 +517,81 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(fake.lastRender()).not.toMatch(/這句要被丟掉/)
   })
 
+  it('自動收音：final transcript 命中問句 → 立即觸發 /suggest（繞過 debounce）', async () => {
+    const suggestBodies: Array<Record<string, unknown>> = []
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      urls.push(u)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          text: '你的優勢是什麼',
+          utterances: [{ speaker: 1, text: '你的優勢是什麼', confidence: 0.9 }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (u.includes('/suggest')) {
+        suggestBodies.push(JSON.parse(init!.body as string))
+        return new Response(JSON.stringify({ ok: true, suggestions: ['結論：數據分析。'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:auto-listen:v1': '1',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(10, 10_000)
+    await new Promise(r => setTimeout(r, 120))
+
+    // 問句命中 → 立即 /suggest（「你的優勢是什麼」無句尾標點，靠問句偵測）
+    expect(suggestBodies.length).toBeGreaterThanOrEqual(1)
+    expect(String(suggestBodies[0]!.transcript)).toContain('你的優勢是什麼')
+    // 自動收音依賴語者錨定 → /transcribe 必須走 diarize（gated=0）
+    expect(urls.find(u => u.includes('/transcribe'))).toContain('gated=0')
+  })
+
+  it('自動收音：非問句不立即觸發 /suggest', async () => {
+    const suggestCalls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          text: '今天天氣不錯',
+          utterances: [{ speaker: 1, text: '今天天氣不錯', confidence: 0.9 }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (u.includes('/suggest')) {
+        suggestCalls.push(u)
+        return new Response(JSON.stringify({ ok: true, suggestions: ['x'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:auto-listen:v1': '1',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(10, 10_000)
+    await new Promise(r => setTimeout(r, 150))
+    expect(suggestCalls).toHaveLength(0)
+  })
+
   it('extend：回答顯示中雙擊 → 再發 /suggest 帶 extendContext，接「── 延伸 ──」', async () => {
     const suggestBodies: Array<Record<string, unknown>> = []
     let round = 0
