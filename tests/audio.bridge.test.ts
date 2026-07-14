@@ -238,6 +238,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
       'cue:privacy-agreed:v1': '1',
       'cue:worker-url:v1': 'https://cue-test.workers.dev',
       'cue:worker-token:v1': 'test-bearer',
+      'cue:gated-mode:v1': '0', // 語者標籤是閘門關（diarize）流程
     })
     fake.invokeTap('glasses')
     await new Promise(r => setTimeout(r, 50))
@@ -265,6 +266,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
       'cue:worker-url:v1': 'https://cue-test.workers.dev',
       'cue:worker-token:v1': 'test-bearer',
       'cue:wearer-speaker-id:v1': '0',  // I am speaker A
+      'cue:gated-mode:v1': '0', // wearer 過濾是閘門關流程
     })
     fake.invokeTap('glasses')
     await new Promise(r => setTimeout(r, 50))
@@ -328,6 +330,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
       'cue:worker-token:v1': 'test-bearer',
       'cue:calibrating:v1': '1',  // user just tapped Calibrate me
       'cue:wearer-speaker-id:v1': '-1', // none yet
+      'cue:gated-mode:v1': '0', // 語者錨定是閘門關流程
     })
     fake.invokeTap('glasses')
     await new Promise(r => setTimeout(r, 50))
@@ -401,5 +404,163 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(liveEl.textContent).toBe('1. 先講結論。\n2. 帶關鍵數字。')
     expect(fake.lastRender()).toMatch(/先講結論/)
     expect(fake.lastRender()).toMatch(/帶關鍵數字/)
+  })
+
+  // ─── Phase 4: 閘門收音（gated）＋ cancel ＋ extend ────────────────
+  it('gated：/transcribe 帶 gated=1，無 utterances 的整段文字標「對方」', async () => {
+    const calls: FakeFetchOpts['calls'] = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        calls!.push({ url: u, method: init?.method ?? 'POST', body: null })
+        // gated 回應：只有 text，無 utterances
+        return new Response(JSON.stringify({ ok: true, text: '請自我介紹一下。' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        calls!.push({ url: u, method: init?.method ?? 'POST', body: JSON.parse(init!.body as string) })
+        return new Response(JSON.stringify({ ok: true, suggestions: ['結論：八年產線經驗。'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:wearer-speaker-id:v1': '0', // gated 模式必須無視 wearer 過濾
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(10, 10_000)
+    await new Promise(r => setTimeout(r, 100))
+
+    const tUrl = calls!.find(c => c.url.includes('/transcribe'))!.url
+    expect(tUrl).toContain('gated=1')
+    expect(fake.lastRender()).toMatch(/\[對方\] 請自我介紹一下/)
+    expect(fake.lastRender()).not.toMatch(/\(you\)/)
+  })
+
+  it('gated：gate-stop（單擊）後強制觸發 /suggest，回答保留在屏', async () => {
+    const calls: FakeFetchOpts['calls'] = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '你的優勢是什麼' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        calls!.push({ url: u, method: 'POST', body: JSON.parse(init!.body as string) })
+        return new Response(JSON.stringify({ ok: true, suggestions: ['結論：數據分析與風控。'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')          // gate-start
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(2, 10_000)         // 20KB < CHUNK_BYTES — 靠尾端 flush
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeTap('glasses')          // gate-stop → 尾端 flush + 強制 suggest
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(calls!.length).toBeGreaterThanOrEqual(1) // 強制觸發，不等 debounce
+    expect(fake.lastRender()).toMatch(/mic off/)
+    expect(fake.lastRender()).toMatch(/數據分析與風控/) // 回答顯示中
+  })
+
+  it('gated：收音中雙擊＝取消（不發 /suggest、丟棄 transcript）', async () => {
+    const suggestCalls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '這句要被丟掉' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        suggestCalls.push(u)
+        return new Response(JSON.stringify({ ok: true, suggestions: ['x'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(2, 10_000)
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeDoubleTap('glasses')    // cancel
+    await new Promise(r => setTimeout(r, 120))
+
+    expect(suggestCalls).toHaveLength(0)
+    expect(fake.lastRender()).toMatch(/mic off/)
+    expect(fake.lastRender()).not.toMatch(/這句要被丟掉/)
+  })
+
+  it('extend：回答顯示中雙擊 → 再發 /suggest 帶 extendContext，接「── 延伸 ──」', async () => {
+    const suggestBodies: Array<Record<string, unknown>> = []
+    let round = 0
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '你的優勢是什麼' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        suggestBodies.push(JSON.parse(init!.body as string))
+        round += 1
+        const payload = round === 1
+          ? { ok: true, suggestions: ['結論：數據分析與風控。'] }
+          : { ok: true, suggestions: ['具體案例：Stacking 模型 Sharpe 1.57。'] }
+        return new Response(JSON.stringify(payload), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(2, 10_000)
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeTap('glasses')          // gate-stop → 第一輪回答
+    await new Promise(r => setTimeout(r, 150))
+    expect(fake.lastRender()).toMatch(/數據分析與風控/)
+
+    fake.invokeDoubleTap('glasses')    // extend
+    await new Promise(r => setTimeout(r, 400)) // 含 300ms 節流窗
+
+    expect(suggestBodies.length).toBe(2)
+    expect(String(suggestBodies[1]!.extendContext)).toContain('數據分析與風控')
+    expect(fake.lastRender()).toMatch(/── 延伸 ──/)
+    expect(fake.lastRender()).toMatch(/Stacking 模型/)
+    expect(fake.exitCalls?.() ?? 0).toBe(0)
   })
 })

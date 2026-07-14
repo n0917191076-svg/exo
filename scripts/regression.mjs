@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // End-to-end regression test for Cue via the Even Hub simulator HTTP API.
-// Verifies the UX flow only — privacy gate, mode cycle, mic toggle, mock
-// suggestion ticks. Real audio capture / STT / LLM cannot be exercised in
+// Verifies the UX flow only — privacy gate, gated capture toggle, answer
+// persistence (Phase 4), mock suggestion ticks. Real audio capture / STT / LLM cannot be exercised in
 // the simulator (no audio input injection); that path is tested via the
 // offline Worker round-trip (scripts/worker-test.mjs) and manually on
 // real glasses with a deployed Worker.
@@ -106,26 +106,27 @@ async function main() {
   // persists across simulator restarts in the local dev preview).
   console.log('1. Initial idle view (mic off)')
   await screenshot('01-initial')
-  // Trigger any state log so we have a baseline.
-  await input('double_click')
-  const cycled = await waitForState(
-    m => m.includes('mode=') && m.includes('mic=off'),
-    { label: 'mode cycled while mic off' },
-  )
-  check('double-tap cycles mode in idle state', cycled.message.includes('mic=off'), cycled.message)
-  await screenshot('02-mode-cycled')
-
-  console.log('2. Tap to start mock session')
+  // WSL 模擬器偶發「幽靈 tap」（開機 ~8s 自發單擊，見 KNOWN_QUIRKS）—
+  // 先歸零：若最後一筆狀態是 mic=on，補一次 click 關掉再開始。
+  const boot = await fetchConsoleEntries()
+  const lastState = [...boot].reverse().find(e => typeof e.message === 'string' && e.message.includes('[cue:state]'))
+  if (lastState && lastState.message.includes('mic=on')) {
+    console.log('   (normalize: phantom tap left mic on — clicking it off first)')
+    await input('click')
+    await waitForState(m => m.includes('mic=off'), { label: 'normalize mic off', timeoutMs: 4_000 })
+  }
+  // Phase 4 起雙擊待命＝退出（不再循環模式），不能拿它當 baseline。
+  // 直接用單擊開閘門收音取得第一筆狀態。
+  console.log('2. Tap to start gated capture (mock session)')
   await input('click')
   const live = await waitForState(
     m => m.includes('mic=on') && m.includes('stage=live'),
-    { label: 'mic-on live state', timeoutMs: 4_000 },
+    { label: 'mic-on live state', timeoutMs: 5_000 },
   )
-  check('tap turns mic on (mock mode)', live.message.includes('mic=on'), live.message)
-  await screenshot('03-live')
+  check('tap opens the gate (mic on, mock mode)', live.message.includes('mic=on'), live.message)
+  await screenshot('02-live')
 
   console.log('3. Wait for mock suggestions to populate')
-  // Mock driver fires immediately on session start; suggestions go from 0 → 3.
   const withSuggestions = await waitForState(
     m => m.includes('mic=on') && m.includes('suggestions=') && !m.includes('suggestions=0'),
     { label: 'mock suggestions populated', timeoutMs: 4_000 },
@@ -133,26 +134,35 @@ async function main() {
   const sm = withSuggestions.message.match(/suggestions=(\d+)/)
   const suggCount = sm ? parseInt(sm[1], 10) : 0
   check('mock driver populates suggestions on tick', suggCount > 0, `${suggCount} suggestions`)
-  await screenshot('04-suggestions')
+  await screenshot('03-suggestions')
 
-  console.log('4. Tap again to stop mic')
+  console.log('4. Tap to close the gate — answer must stay on screen')
   await input('click')
-  const idleAgain = await waitForState(
+  const answerShown = await waitForState(
     m => m.includes('mic=off'),
-    { label: 'back to idle', timeoutMs: 3_000 },
+    { label: 'gate closed', timeoutMs: 3_000 },
   )
-  check('tap again turns mic off', idleAgain.message.includes('mic=off'), idleAgain.message)
-  await screenshot('05-back-to-idle')
+  // Phase 4 核心：gate-stop 後建議保留（回答顯示中），不歸零。
+  const am = answerShown.message.match(/suggestions=(\d+)/)
+  const answerCount = am ? parseInt(am[1], 10) : 0
+  check('answer persists after gate-stop (hasAnswer)', answerCount > 0, answerShown.message)
+  await screenshot('04-answer-kept')
 
-  console.log('5. Render loop liveness (3s sample, mic on)')
-  // Re-tap to start a mock session, then sample state-log frequency.
-  // Mock-tick fires every 8s; mic-tick fires every 1s. Expect at least
-  // 2 state logs in a 3s window — catches "loop died after first render".
+  console.log('5. Double-tap while answer shown must NOT exit (extend semantics)')
+  await input('double_click')
+  await new Promise(r => setTimeout(r, 500))
+  // mock 模式 extend 是 no-op，但 app 必須還活著：再開一次閘門驗證。
   await input('click')
-  await waitForState(m => m.includes('mic=on'), { label: 'mic on for liveness sample', timeoutMs: 3_000 })
+  const aliveAgain = await waitForState(
+    m => m.includes('mic=on'),
+    { label: 'app alive after double-tap on answer', timeoutMs: 4_000 },
+  )
+  check('double-tap on answer does not exit the app', aliveAgain.message.includes('mic=on'), aliveAgain.message)
+
+  console.log('6. Render loop liveness (3s sample, mic on)')
   const ticks = await countStateLogs(3_000)
   check('render loop emits state logs while mic on', ticks >= 2, `${ticks} state logs in 3s`)
-  await input('click') // back to idle
+  await input('click') // gate off
   await waitForState(m => m.includes('mic=off'), { label: 'mic off after liveness', timeoutMs: 3_000 })
 
   console.log()

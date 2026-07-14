@@ -38,6 +38,7 @@ interface FakeBridge {
   // State spies — reads what the runtime got asked to do.
   lastRender: () => string
   micActive: () => boolean
+  exitCalls: () => number
   // Mutators for test scenarios.
   setBattery: (n: number | undefined) => void
 }
@@ -48,6 +49,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
   let foregroundHandler: (() => void) | null = null
   let lastRendered = ''
   let mic = false
+  let exits = 0
   let battery = initialBattery
   const storage: Record<string, string> = {}
 
@@ -59,7 +61,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
     onForeground: h => { foregroundHandler = h },
     startMic: async () => { mic = true; return true },
     stopMic: async () => { mic = false },
-    exitApp: async () => {},
+    exitApp: async () => { exits += 1 },
     getStorage: async k => storage[k] ?? '',
     setStorage: async (k, v) => { storage[k] = v; return true },
     getBatteryLevel: async () => battery,
@@ -71,6 +73,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
     invokeForeground: () => foregroundHandler?.(),
     lastRender: () => lastRendered,
     micActive: () => mic,
+    exitCalls: () => exits,
     setBattery: n => { battery = n },
   }
 }
@@ -210,7 +213,7 @@ describe('Cue plugin with mocked bridge', () => {
     expect(fake.lastRender()).toMatch(/○15%/)
   })
 
-  it('double-tap on glasses while mic off cycles modes', async () => {
+  it('Phase 4：純待命（無回答）雙擊＝退出，模式不再循環', async () => {
     await bootMocked({
       'cue:privacy-agreed:v1': '1',
       'cue:mode:v1': 'work',
@@ -218,8 +221,40 @@ describe('Cue plugin with mocked bridge', () => {
     expect(fake.lastRender()).toMatch(/工作/)
     fake.invokeDoubleTap('glasses')
     await new Promise(r => setTimeout(r, 20))
-    // work 是第一個模式；循環後應落在 daily（日常）。
-    expect(fake.lastRender()).toMatch(/日常/)
+    expect(fake.exitCalls()).toBe(1)
+    // 模式維持 work — 切模式只在手機 radio
+    expect(fake.lastRender()).toMatch(/工作/)
+    expect(fake.lastRender()).not.toMatch(/日常/)
+  })
+
+  it('Phase 4：ring 純待命雙擊無作用（不退出）', async () => {
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
+    fake.invokeDoubleTap('ring')
+    await new Promise(r => setTimeout(r, 20))
+    expect(fake.exitCalls()).toBe(0)
+  })
+
+  it('Phase 4：mock 模式 gate-stop 後回答保留在屏（hasAnswer）', async () => {
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
+    fake.invokeTap('glasses') // gate-start
+    await new Promise(r => setTimeout(r, 60)) // mock tick 立即補建議
+    expect(fake.lastRender()).toMatch(/LIVE/)
+    fake.invokeTap('glasses') // gate-stop
+    await new Promise(r => setTimeout(r, 40))
+    // mic 已關但建議仍顯示（回答顯示中狀態）
+    expect(fake.lastRender()).toMatch(/mic off/)
+    expect(fake.lastRender()).toMatch(/產線|競賽|風控|結論/) // mock work 建議內容
+  })
+
+  it('Phase 4：回答顯示中雙擊不退出（誤觸保護）', async () => {
+    await bootMocked({ 'cue:privacy-agreed:v1': '1', 'cue:mode:v1': 'work' })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 60))
+    fake.invokeTap('glasses') // 停 → 回答顯示中
+    await new Promise(r => setTimeout(r, 40))
+    fake.invokeDoubleTap('glasses') // 應為 extend（mock 模式無 LLM，至少不能退出）
+    await new Promise(r => setTimeout(r, 20))
+    expect(fake.exitCalls()).toBe(0)
   })
 
   it('foreground re-paints (covers the FOREGROUND_ENTER path)', async () => {

@@ -106,6 +106,8 @@ Symptom set observed on WSL2 + WSLg (software-rendered EGL): `/api/input` return
 
 Reproduced across two fresh sim launches while a Playwright-driven Chromium (MCP browser) held a tab on the same Vite dev server. Closing the Playwright browser and relaunching the sim fixed it immediately (e2e 5/5). Single-trial correlation, not fully root-caused — WSLg resource pressure suspected.
 
+**Update (same day):** the spurious ~8s-after-boot phantom tap also occurs WITHOUT the input-delivery degradation (seen on a healthy sim where `/api/input` worked fine). It flips mic ON before any scripted input, which breaks regression baselines. `scripts/regression.mjs` now normalizes state first (if the last `[cue:state]` shows `mic=on`, it clicks it off before starting). If you write new sim automation, do the same.
+
 **Workaround:** close other automation browsers (Playwright/Chromium) before running sim e2e; then `pkill -f evenhub-simulator && sleep 2` and relaunch. Don't debug the app first — check this quirk when gestures dispatch but nothing happens and only one sim instance is running.
 
 ### Multiple `evenhub-simulator` instances on same `--automation-port` silently fight

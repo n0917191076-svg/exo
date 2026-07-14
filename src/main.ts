@@ -3,7 +3,7 @@
 // See ~/Documents/Pulse/ROADMAP.md § "Plan: Cue" for the full plan.
 
 import { connectEvenRuntime, type EvenRuntime, type InputSource, type SwipeDir } from './even'
-import { DEFAULT_MODE, MODES, type Mode, type ModeId, modeById, nextMode } from './modes'
+import { DEFAULT_MODE, MODES, type Mode, type ModeId, modeById } from './modes'
 import { nextMockExchange, nextMockProactiveTopics, resetMock } from './mock'
 import {
   DEFAULT_ANSWER_LENGTH,
@@ -29,6 +29,7 @@ import {
   hasAgreedToPrivacy,
   setAnswerLength,
   setCustomPrompt,
+  setGatedMode,
   setIdleAutoPauseMin,
   setKbAttach,
   setKbExtra,
@@ -41,6 +42,7 @@ import {
   appendSessionRecord,
   clearSessionHistory,
   getCalibrating,
+  getGatedMode,
   loadSessionHistory,
   setCalibrating,
   setShowDebugOverlay,
@@ -54,6 +56,7 @@ import {
   type ModelChoice,
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type TranscriptEvent } from './transport'
+import { gestureMapFor, type TriggerEvent } from './triggers'
 import {
   appendTurn,
   batteryHeaderSuffix,
@@ -131,6 +134,23 @@ let langMode: LangMode = DEFAULT_LANG
 // 渲染（皆經 even.ts enqueue()）— 高頻 textContainerUpgrade 會弄壞
 // BLE（KNOWN_QUIRKS）。手機 DOM 渲染不受此限。
 const glassesThrottle = createRenderThrottle(300)
+
+// Phase 4（Exo）：閘門模式（預設開）— 收音整段視為「對方」，Worker
+// 拿掉 diarize/utterances。extendedText 是「延伸」逐層累積的螢幕全文。
+let gatedMode = true
+let extendedText = ''
+let extendInFlight = false
+
+// 螢幕上的完整回答（延伸優先；否則把建議組回編號清單）
+function currentAnswerText(): string {
+  if (extendedText) return extendedText
+  return suggestions.map((sg, i) => `${i + 1}. ${sg}`).join('\n')
+}
+
+// 「回答顯示中」狀態 — 手勢表的 hasAnswer 維度
+function hasAnswerOnScreen(): boolean {
+  return !micOn && (extendedText !== '' || suggestions.length > 0)
+}
 
 // Phase 2（Exo）知識庫 — 內容與每模式掛載表，bootstrap 補水
 let kbPersonal = ''
@@ -330,6 +350,14 @@ root.innerHTML = `
         <hr style="border: 0; border-top: 1px solid #eee; margin: .5rem 0;" />
 
         <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
+          <input id="gated-mode" type="checkbox" checked />
+          閘門模式（預設開）：只在對方說話時收音，整段視為對方——省語者分離的成本與延遲
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">關閉後退回連續收音＋語者標籤（[A]/[B]）流程。</p>
+
+        <hr style="border: 0; border-top: 1px solid #eee; margin: .5rem 0;" />
+
+        <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
           <input id="show-debug-overlay" type="checkbox" />
           Show diagnostic overlay on glasses (audio frames / chunks / errors)
         </label>
@@ -420,6 +448,7 @@ const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-statu
 const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
 const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
 const liveSuggestionsEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
+
 const sceneNoteInput = document.querySelector<HTMLInputElement>('#scene-note')!
 const langSelect = document.querySelector<HTMLSelectElement>('#lang-mode')!
 const modelSelect = document.querySelector<HTMLSelectElement>('#model-choice')!
@@ -441,7 +470,7 @@ saveConvoBtn.addEventListener('click', async () => {
   // lang 影響 /transcribe 的 ?lang= — 重建 transport 讓下一次收音生效
   const wUrl = await getWorkerUrl()
   const wTok = await getWorkerToken()
-  transport = createTransport(wUrl, wTok, { lang: langMode })
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
   isRealMode = transport.ready
   convoStatus.textContent = '已儲存。下次收音生效。'
   window.setTimeout(() => { convoStatus.textContent = '' }, 4000)
@@ -499,6 +528,18 @@ calibrateBtn.addEventListener('click', async () => {
   calibrateStatus.style.color = '#2a2'
   calibrateStatus.textContent = 'Listening for your voice — say "this is me" within ~10s.'
   window.setTimeout(() => { calibrateStatus.textContent = '' }, 12_000)
+})
+
+const gatedModeInput = document.querySelector<HTMLInputElement>('#gated-mode')!
+gatedModeInput.addEventListener('change', async () => {
+  gatedMode = gatedModeInput.checked
+  await setGatedMode(gatedMode)
+  // gated 影響 /transcribe query — 重建 transport 讓下一次收音生效
+  const wUrl = await getWorkerUrl()
+  const wTok = await getWorkerToken()
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
+  isRealMode = transport.ready
+  void paint()
 })
 
 showDebugOverlayInput.addEventListener('change', async () => {
@@ -595,6 +636,20 @@ function renderGlasses(): string {
     ].join('\n')
   }
   if (!micOn) {
+    // Phase 4：回答顯示中 — 停止收音後答案留在屏上，雙擊可延伸
+    if (hasAnswerOnScreen()) {
+      const answerLines: string[] = [header, '']
+      if (autoPausedReason) {
+        answerLines.push(autoPausedReason)
+        answerLines.push('')
+      }
+      for (const ln of currentAnswerText().split('\n')) {
+        answerLines.push(trunc(ln, 76))
+      }
+      answerLines.push('')
+      answerLines.push('[tap] 新一輪  [2x] 延伸')
+      return answerLines.join('\n')
+    }
     const idleLines: string[] = [
       header,
       '',
@@ -608,7 +663,7 @@ function renderGlasses(): string {
     }
     idleLines.push(`${isRealMode ? '◉ live' : '◌ mock'} ready`)
     idleLines.push('[tap] start mic')
-    idleLines.push('[2x] cycle mode')
+    idleLines.push('[2x] exit')
     return idleLines.join('\n')
   }
   // Live view.
@@ -620,8 +675,9 @@ function renderGlasses(): string {
   const recent = conversation.slice(-MAX_DISPLAYED_TURNS)
   if (recent.length > 0) {
     for (const turn of recent) {
-      const label = speakerLabel(turn.speaker)
-      const youMarker = turn.speaker === wearerSpeakerId ? ' (you)' : ''
+      // Phase 4 閘門模式：整段都是對方，不做 [A]/[B] 與 (you) 標記
+      const label = gatedMode ? '對方' : speakerLabel(turn.speaker)
+      const youMarker = !gatedMode && turn.speaker === wearerSpeakerId ? ' (you)' : ''
       lines.push(trunc(`[${label}${youMarker}] ${turn.text}`, 76))
     }
   } else if (lastTranscript) {
@@ -657,7 +713,7 @@ function renderGlasses(): string {
     lines.push('(suggestions appear here)')
   }
   lines.push('')
-  lines.push(mode.proactiveSupported ? '[ring 2x] topics  [tap] mic' : '[tap] toggle mic')
+  lines.push(mode.proactiveSupported ? '[tap] 送出  [2x] 取消  [ring 2x] 話題' : '[tap] 送出  [2x] 取消')
   return lines.join('\n')
 }
 
@@ -714,11 +770,14 @@ async function showProactiveTopics(): Promise<void> {
 async function toggleMic(): Promise<void> {
   if (!agreedToPrivacy) return
   micOn = !micOn
-  suggestions = []
-  lastTranscript = ''
-  liveTranscript = ''
   proactiveActive = false
   if (micOn) {
+    // Phase 4：只在開始新一輪時清屏 — 停止後答案要留著（回答顯示中）
+    suggestions = []
+    extendedText = ''
+    lastTranscript = ''
+    liveTranscript = ''
+    conversation.length = 0
     // User re-engaged after auto-pause — clear the stale notice.
     autoPausedReason = ''
     lastTranscriptAt = Date.now()
@@ -752,8 +811,80 @@ async function toggleMic(): Promise<void> {
         suggestionCount: sessionSuggestionCount,
       }).then(() => renderSessionHistory())
     }
+    // Phase 4 閘門語意：gate-stop ＝ 送出。endMicSession 的尾端 flush 已
+    // 把最後一段 transcript 收進 liveTranscript — 強制觸發，不等 debounce。
+    if (isRealMode && gatedMode && liveTranscript.trim().length > 0) {
+      await maybeRequestSuggestions(true)
+    }
   }
   await paint()
+}
+
+// Phase 4：取消本段收音 — 丟棄 pending 音訊與本段 transcript，不觸發
+// /suggest、不記 session record。收音中雙擊（glasses）觸發。
+async function cancelGate(): Promise<void> {
+  if (!micOn) return
+  micOn = false
+  stopMockTimer()
+  stopMicTick()
+  if (transport) await transport.endMicSession({ discard: true })
+  if (even) await even.stopMic()
+  conversation.length = 0
+  liveTranscript = ''
+  lastTranscript = ''
+  suggestions = []
+  extendedText = ''
+  // eslint-disable-next-line no-console
+  console.log('[cue:gate] cancelled — 本段已丟棄')
+  await paint()
+}
+
+// Phase 4：延伸 — 回答顯示中雙擊。帶前輪問答 context 發「接續深入」，
+// 串流接在原回答後（加「── 延伸 ──」分隔），可連續雙擊逐層加深。
+async function runExtend(): Promise<void> {
+  if (!transport || !isRealMode) return // mock 模式無 LLM — 忽略（不退出即可）
+  if (extendInFlight || suggestionInFlight) return
+  extendInFlight = true
+  const base = currentAnswerText()
+  const prefix = `${base}\n── 延伸 ──\n`
+  let lastAcc = ''
+  try {
+    const customPrompt = currentMode === 'custom' ? await getCustomPrompt() : undefined
+    const result = await transport.requestSuggestionsStream({
+      mode: currentMode,
+      transcript: liveTranscript,
+      customPrompt,
+      recentSuggestions: recentSuggestionsRing.slice(),
+      sceneNote,
+      model: modelChoice,
+      length: answerLength,
+      lang: langMode,
+      kbPersonal: kbAttach[currentMode].personal && kbPersonal ? kbPersonal : undefined,
+      kbExtra: kbAttach[currentMode].extra && kbExtra ? kbExtra : undefined,
+      extendContext: base,
+    }, {
+      onDelta(accumulated) {
+        lastAcc = accumulated
+        extendedText = prefix + accumulated
+        liveSuggestionsEl.textContent = extendedText
+        glassesThrottle.push(() => { void paint() })
+      },
+    })
+    if (result.ok) {
+      glassesThrottle.flush()
+      // 串流時保留原始全文（延伸內容不一定是編號清單）；JSON fallback 用解析結果
+      const finalPart = result.streamed && lastAcc
+        ? lastAcc
+        : result.suggestions.map((sg, i) => `${i + 1}. ${sg}`).join('\n')
+      extendedText = prefix + finalPart
+      liveSuggestionsEl.textContent = extendedText
+    } else {
+      extendedText = base // 失敗 — 回復原回答
+    }
+    await paint()
+  } finally {
+    extendInFlight = false
+  }
 }
 
 function startMicTick(): void {
@@ -872,7 +1003,8 @@ function onTranscriptFrame(e: TranscriptEvent): void {
   // what the wearer just said).
   if (e.isFinal) {
     const otherLines = turns
-      .filter(t => wearerSpeakerId < 0 || t.speaker !== wearerSpeakerId)
+      // Phase 4 閘門模式：整段保證是對方 — 跳過 wearer 過濾
+      .filter(t => gatedMode || wearerSpeakerId < 0 || t.speaker !== wearerSpeakerId)
       .map(t => t.text)
       .join(' ')
     if (otherLines.trim().length > 0) {
@@ -891,9 +1023,9 @@ function onTranscriptFrame(e: TranscriptEvent): void {
   void paint()
 }
 
-async function maybeRequestSuggestions(): Promise<void> {
+async function maybeRequestSuggestions(force = false): Promise<void> {
   if (!transport || !isRealMode) return
-  const fire = shouldRequestSuggestion(
+  const fire = force || shouldRequestSuggestion(
     {
       lastChunkText,
       lastChunkAt,
@@ -961,44 +1093,54 @@ async function maybeRequestSuggestions(): Promise<void> {
 const RECENT_SUGGESTIONS_CAP = 12
 const recentSuggestionsRing: string[] = []
 
-async function cycleMode(): Promise<void> {
-  currentMode = nextMode(currentMode)
-  await setMode(currentMode)
-  renderModeList()
-  await paint()
-}
-
-function onTap(_src: InputSource): void {
-  if (!agreedToPrivacy) return // require phone-side opt-in first
-  if (!micOn) {
-    void toggleMic()
+// Phase 4：手勢 → 語意事件走 gestureMapFor 純函式（模式作用域的單一
+// 事實來源），main.ts 只剩一個 dispatcher。模式切換只在手機 radio。
+function handleGesture(gesture: 'tap' | 'double-tap', src: InputSource): void {
+  if (!agreedToPrivacy) {
+    if (gesture === 'double-tap' && even) void even.exitApp()
     return
   }
-  // Mic on: tap toggles mic off (so the user can pause quickly).
-  void toggleMic()
-}
-
-function onDoubleTap(source: InputSource): void {
-  if (!agreedToPrivacy) {
+  const ev = gestureMapFor({
+    mode: currentMode,
+    micOn,
+    hasAnswer: hasAnswerOnScreen(),
+    source: src === 'ring' ? 'ring' : 'glasses',
+    gesture,
+    silentIdle: false, // Phase 4 Task 6（自動收音）才會為真
+  })
+  if (ev === 'exit') {
     if (even) void even.exitApp()
     return
   }
-  if (!micOn) {
-    // Idle: cycle mode regardless of source.
-    void cycleMode()
-    return
+  if (ev) void dispatchTrigger(ev)
+}
+
+async function dispatchTrigger(ev: TriggerEvent): Promise<void> {
+  switch (ev) {
+    case 'gate-start':
+      if (!micOn) await toggleMic()
+      break
+    case 'gate-stop':
+      if (micOn) await toggleMic()
+      break
+    case 'cancel':
+      await cancelGate()
+      break
+    case 'extend':
+      await runExtend()
+      break
+    case 'proactive':
+      await showProactiveTopics()
+      break
   }
-  // Mic on, ring 2x = proactive topics; glasses 2x = exit (stops mic too).
-  if (source === 'ring') {
-    void showProactiveTopics()
-    return
-  }
-  if (even) {
-    micOn = false
-    stopMockTimer()
-    stopMicTick()
-    void even.exitApp()
-  }
+}
+
+function onTap(src: InputSource): void {
+  handleGesture('tap', src)
+}
+
+function onDoubleTap(source: InputSource): void {
+  handleGesture('double-tap', source)
 }
 
 function onSwipe(_dir: SwipeDir): void {
@@ -1107,7 +1249,7 @@ saveWorkerBtn.addEventListener('click', async () => {
   await setWorkerUrl(workerUrlInput.value)
   await setWorkerToken(workerTokenInput.value)
   // Re-initialize transport so the next mic session uses the new config.
-  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim(), { lang: langMode })
+  transport = createTransport(workerUrlInput.value.trim(), workerTokenInput.value.trim(), { lang: langMode, gated: gatedMode })
   isRealMode = transport.ready
   workerStatus.style.color = '#2a2'
   workerStatus.textContent = isRealMode
@@ -1161,6 +1303,9 @@ async function bootstrap(): Promise<void> {
   wearerSpeakerId = await getWearerSpeakerId()
   wearerSpeakerSelect.value = String(wearerSpeakerId)
   calibratingNow = await getCalibrating()
+  // Phase 4：閘門模式補水（預設開）
+  gatedMode = await getGatedMode()
+  gatedModeInput.checked = gatedMode
   // Phase 1 設定補水
   sceneNote = await getSceneNote()
   modelChoice = await getModelChoice()
@@ -1180,7 +1325,7 @@ async function bootstrap(): Promise<void> {
   renderKbAttach()
   // Set up transport if both Worker URL + token are configured. If they're
   // unset or change later, mock mode runs.
-  transport = createTransport(wUrl, wTok, { lang: langMode })
+  transport = createTransport(wUrl, wTok, { lang: langMode, gated: gatedMode })
   isRealMode = transport.ready
   renderModeList()
 
