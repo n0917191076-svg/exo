@@ -43,11 +43,15 @@ const DEEPGRAM_WS = 'https://api.deepgram.com/v1/listen?model=nova-2&interim_res
 // Phase 1（Exo）：nova-3 自 2026-03 起支援繁中（zh-TW）；diarization 為
 // 語言無關。lang 由 /transcribe 的 ?lang= query 帶入（body 是 raw PCM，
 // 塞不了 JSON 欄位）。若實測 nova-3 中文品質不佳，退 nova-2（同樣支援 zh-TW）。
+// Phase 4：閘門模式（gated=1，預設）拿掉 diarize/utterances — 閘門收音
+// 保證整段都是「對方」，語者分離是純浪費（加價項＋延遲）。gated=0 退回
+// Cue 原 diarize 流程（自動收音模式用）。export 供 test-worker 驗證組裝。
 const DEEPGRAM_HTTP_BASE =
-  'https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&diarize=true&utterances=true&smart_format=true'
+  'https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&smart_format=true'
 
-function deepgramHttpUrl(lang: 'zh' | 'en'): string {
-  return `${DEEPGRAM_HTTP_BASE}&language=${lang === 'en' ? 'en' : 'zh-TW'}`
+export function deepgramHttpUrl(lang: 'zh' | 'en', gated: boolean): string {
+  const diarize = gated ? '' : '&diarize=true&utterances=true'
+  return `${DEEPGRAM_HTTP_BASE}${diarize}&language=${lang === 'en' ? 'en' : 'zh-TW'}`
 }
 
 const SAMPLE_RATE = 16000
@@ -112,9 +116,11 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     // < ~50ms of audio at 16k. Don't burn quota on near-empty chunks.
     return jsonResponse(200, { ok: true, text: '' })
   }
-  const lang = new URL(request.url).searchParams.get('lang') === 'en' ? ('en' as const) : ('zh' as const)
+  const params = new URL(request.url).searchParams
+  const lang = params.get('lang') === 'en' ? ('en' as const) : ('zh' as const)
+  const gated = params.get('gated') !== '0' // 預設閘門開
   const wav = wavWrap(pcm)
-  const dgRes = await fetch(deepgramHttpUrl(lang), {
+  const dgRes = await fetch(deepgramHttpUrl(lang, gated), {
     method: 'POST',
     headers: {
       Authorization: `Token ${env.DEEPGRAM_API_KEY}`,
@@ -178,6 +184,7 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     lang?: string
     kbPersonal?: string
     kbExtra?: string
+    extendContext?: string
   }
   try {
     body = (await request.json()) as typeof body
@@ -209,6 +216,11 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   const kbBlock =
     (kbPersonal ? `\n\n【個人資訊】\n${kbPersonal}` : '') +
     (kbExtra ? `\n\n【補充資料】\n${kbExtra}` : '')
+  // Phase 4：延伸（extend）— 回答顯示中雙擊。要求接續深入、不重複。
+  const extendBlock = body.extendContext?.trim()
+    ? '\n\n使用者要求在以下回答的基礎上接續深入，直接給出更深一層的內容，' +
+      '不要重複已說過的內容：\n' + body.extendContext.trim()
+    : ''
   const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
     short: { zh: '每條建議 ≤10 個字。', en: 'Each suggestion must be at most 10 words.' },
     medium: { zh: '每條建議 ≤20 個字。', en: 'Each suggestion must be at most 20 words.' },
@@ -221,7 +233,7 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     ? '\n\n對方說的是英文。輸出格式：第 1 條必須是「譯：<對方那句話的中文翻譯>」；' +
       '第 2、3 條為英文回答建議，用簡單詞彙（CEFR B1 以內），使用者可直接照念。'
     : ''
-  const systemPrompt = baseSystem + sceneBlock + kbBlock + lengthBlock + langBlock + dedupeNote
+  const systemPrompt = baseSystem + sceneBlock + kbBlock + extendBlock + lengthBlock + langBlock + dedupeNote
 
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL

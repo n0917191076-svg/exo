@@ -199,7 +199,7 @@ describe('createTransport', () => {
     t.sendAudioFrame(new Uint8Array(20_000))
     await t.endMicSession()
     const transcribeUrl = urls.find(u => u.includes('/transcribe'))
-    expect(transcribeUrl).toBe('https://cue.example.workers.dev/transcribe?lang=en')
+    expect(transcribeUrl).toBe('https://cue.example.workers.dev/transcribe?lang=en&gated=1')
   })
 
   it('未指定 lang 時 /transcribe 預設 zh', async () => {
@@ -331,5 +331,55 @@ describe('createTransport', () => {
     const r = await t.requestSuggestionsStream({ mode: 'work', transcript: 'hi' }, { onDelta: () => {} })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toMatch(/not configured/)
+  })
+
+  // ─── Phase 4: gated 參數與 extendContext ──────────────────────────
+  it('/transcribe URL 帶 gated 參數（預設 1）', async () => {
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(String(url))
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret', { lang: 'zh' })
+    await t.startMicSession(() => {}, () => {})
+    t.sendAudioFrame(new Uint8Array(20_000))
+    await t.endMicSession()
+    expect(urls.find(u => u.includes('/transcribe'))).toBe(
+      'https://cue.example.workers.dev/transcribe?lang=zh&gated=1',
+    )
+  })
+
+  it('gated: false 時 /transcribe 帶 gated=0（Cue 原 diarize 流程）', async () => {
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(String(url))
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret', { lang: 'zh', gated: false })
+    await t.startMicSession(() => {}, () => {})
+    t.sendAudioFrame(new Uint8Array(20_000))
+    await t.endMicSession()
+    expect(urls.find(u => u.includes('/transcribe'))).toContain('gated=0')
+  })
+
+  it('requestSuggestionsStream 帶 extendContext 進 body', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, suggestions: ['更深一層'] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    await t.requestSuggestionsStream(
+      { mode: 'work', transcript: '請自我介紹', extendContext: '1. 我有八年產線經驗。' },
+      { onDelta: () => {} },
+    )
+    const body = JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)
+    expect(body.extendContext).toBe('1. 我有八年產線經驗。')
   })
 })

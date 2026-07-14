@@ -53,13 +53,16 @@ export interface SuggestParams {
   kbPersonal?: string
   /** Phase 2：補充資料 KB — 同上。 */
   kbExtra?: string
+  /** Phase 4：延伸（extend）— 螢幕上的完整回答；Worker 據此要求「接續深入、不重複」。 */
+  extendContext?: string
 }
 
 export interface CueTransport {
   ready: boolean
   startMicSession: (onTranscript: (e: TranscriptEvent) => void, onError: (msg: string) => void) => Promise<void>
   sendAudioFrame: (frame: Uint8Array) => void
-  endMicSession: () => Promise<void>
+  /** Phase 4：discard=true 丟棄尾端 pending 音訊（取消本段），不打 /transcribe。 */
+  endMicSession: (opts?: { discard?: boolean }) => Promise<void>
   requestSuggestions: (params: SuggestParams) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
   /**
    * Phase 3：串流版 /suggest。onDelta 以「累積全文」回呼（呼叫端只管
@@ -123,13 +126,15 @@ const MIN_CHUNK_BYTES = Math.round(BYTES_PER_SECOND * 0.5) // 500ms — below th
 export function createTransport(
   workerUrl: string,
   bearerToken: string,
-  opts: { lang?: 'zh' | 'en' } = {},
+  opts: { lang?: 'zh' | 'en'; gated?: boolean } = {},
 ): CueTransport {
   const baseHttp = workerUrl.replace(/\/$/, '')
   const ready = !!workerUrl && !!bearerToken
   // Phase 1：lang 決定 Worker 端的 Deepgram language 參數（zh→zh-TW）。
   // /transcribe 的 body 是 raw PCM，塞不了 JSON 欄位，所以走 query。
+  // Phase 4：gated（預設開）— Worker 據此拿掉 diarize/utterances。
   const lang = opts.lang ?? 'zh'
+  const gated = opts.gated ?? true
 
   let onTranscriptCb: ((e: TranscriptEvent) => void) | null = null
   let onErrorCb: ((msg: string) => void) | null = null
@@ -160,7 +165,7 @@ export function createTransport(
     chunksFlushed += 1
     const chunk = pending
     pending = new Uint8Array(0)
-    const url = `${baseHttp}/transcribe?lang=${lang}`
+    const url = `${baseHttp}/transcribe?lang=${lang}&gated=${gated ? 1 : 0}`
     const startedAt = Date.now()
     try {
       // Body as Blob, not raw ArrayBuffer — WKWebView's fetch handles
@@ -278,13 +283,18 @@ export function createTransport(
         void flush()
       }
     },
-    async endMicSession() {
+    async endMicSession(opts = {}) {
       // Final flush for the trailing partial chunk so a quick utterance
       // ending mid-buffer isn't dropped. `force` is required because the
       // active-flag check would otherwise skip the trailing send (set
       // active=false BEFORE awaiting so no new sendAudioFrame races in).
+      // Phase 4：discard（取消本段）— 丟棄 pending，不打 /transcribe。
       active = false
-      await flush(true)
+      if (opts.discard) {
+        pending = new Uint8Array(0)
+      } else {
+        await flush(true)
+      }
       onTranscriptCb = null
       onErrorCb = null
     },
