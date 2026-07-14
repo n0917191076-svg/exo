@@ -64,6 +64,7 @@ import {
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type TranscriptEvent } from './transport'
 import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
+import { Vad } from './vad'
 import {
   appendTurn,
   batteryHeaderSuffix,
@@ -1087,8 +1088,19 @@ async function startRealSession(): Promise<void> {
   }
   // Ask the SDK to start the mic. PCM frames flow into transport via
   // sendAudioFrame; transport buffers and POSTs every CHUNK_MS.
+  // VAD 只在自動收音模式啟用 — 音訊層偵測「說完了」提早送轉寫；
+  // 閘門模式的開/關就是人手，完全不經 VAD（邊界有測試鎖定）。
+  const sessionVad = autoListen ? new Vad() : null
+  sessionVad?.start()
   const ok = await even.startMic(frame => {
     transport?.sendAudioFrame(frame)
+    if (sessionVad) {
+      const reason = sessionVad.push(frame)
+      if (reason) {
+        if (reason === 'voice-end') transport?.flushNow()
+        sessionVad.start() // 連續偵測：每輪收束後重啟
+      }
+    }
   }, audioSource)
   if (!ok) {
     lastTranscript = '(mic permission denied)'

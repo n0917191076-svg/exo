@@ -63,6 +63,8 @@ export interface CueTransport {
   sendAudioFrame: (frame: Uint8Array) => void
   /** Phase 4：discard=true 丟棄尾端 pending 音訊（取消本段），不打 /transcribe。 */
   endMicSession: (opts?: { discard?: boolean }) => Promise<void>
+  /** VAD（自動收音模式）：說完即刻送出 pending 音訊，不等切塊滿。低於 MIN_CHUNK 或已有請求在飛則無作用。 */
+  flushNow: () => void
   requestSuggestions: (params: SuggestParams) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
   /**
    * Phase 3：串流版 /suggest。onDelta 以「累積全文」回呼（呼叫端只管
@@ -282,6 +284,9 @@ export function createTransport(
       if (pending.byteLength >= CHUNK_BYTES) {
         void flush()
       }
+    },
+    flushNow() {
+      void flush()
     },
     async endMicSession(opts = {}) {
       // Final flush for the trailing partial chunk so a quick utterance

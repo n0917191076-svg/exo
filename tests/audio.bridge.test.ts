@@ -21,6 +21,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { synthFrame } from '../src/vad'
 
 interface FakeRuntime {
   render: (text: string) => Promise<void>
@@ -661,6 +662,72 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     fake.pumpFrames(10, 10_000)
     await new Promise(r => setTimeout(r, 150))
     expect(suggestCalls).toHaveLength(0)
+  })
+
+  it('VAD 邊界：自動收音模式下 voice-end 提早 flush（不等 2.5s 切塊滿）', async () => {
+    const transcribeCalls: number[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        transcribeCalls.push(Date.now())
+        return new Response(JSON.stringify({ ok: true, text: '' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, suggestions: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:auto-listen:v1': '1',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    // 30KB 有聲（> MIN_CHUNK 16KB、遠小於 80KB 切塊閾值）→ 停止說話
+    for (let i = 0; i < 3; i += 1) fake.pumpFrame(synthFrame(5_000, 0.2))
+    fake.pumpFrame(synthFrame(500, 0.001)) // 進 POST_VOICE
+    await new Promise(r => setTimeout(r, 750)) // 撐過 700ms silence-hold
+    fake.pumpFrame(synthFrame(500, 0.001))    // voice-end → flushNow
+    await new Promise(r => setTimeout(r, 80))
+    expect(transcribeCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('VAD 邊界：閘門模式完全不經 VAD（同樣音訊不提早 flush）', async () => {
+    const transcribeCalls: number[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        transcribeCalls.push(Date.now())
+        return new Response(JSON.stringify({ ok: true, text: '' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, suggestions: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      // 閘門模式（預設開）——不設 auto-listen
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    for (let i = 0; i < 3; i += 1) fake.pumpFrame(synthFrame(5_000, 0.2))
+    fake.pumpFrame(synthFrame(500, 0.001))
+    await new Promise(r => setTimeout(r, 750))
+    fake.pumpFrame(synthFrame(500, 0.001))
+    await new Promise(r => setTimeout(r, 80))
+    // 30KB < 80KB 切塊閾值且無 VAD — 不得有任何 /transcribe
+    expect(transcribeCalls).toHaveLength(0)
   })
 
   it('extend：回答顯示中雙擊 → 再發 /suggest 帶 extendContext，接「── 延伸 ──」', async () => {
