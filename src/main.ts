@@ -64,7 +64,9 @@ import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './trigger
 import {
   appendTurn,
   batteryHeaderSuffix,
+  GLASSES_CONTENT_MAX_BYTES,
   createRenderThrottle,
+  fitTailByBytes,
   isQuestionZh,
   pruneTurns,
   shouldRequestSuggestion,
@@ -710,19 +712,25 @@ function renderGlasses(): string {
     ].join('\n')
   }
   if (!micOn) {
-    // Phase 4：回答顯示中 — 停止收音後答案留在屏上，雙擊可延伸
+    // Phase 4：回答顯示中 — 停止收音後答案留在屏上，雙擊可延伸。
+    // 官方 textContainerUpgrade 上限 512 bytes/次（超過無聲截斷），延伸
+    // 逐層累積必爆 — 眼鏡端用尾端滾動窗只留最新內容；手機端仍顯示全文。
     if (hasAnswerOnScreen()) {
-      const answerLines: string[] = [header, '']
+      const fixedTop: string[] = [header, '']
       if (autoPausedReason) {
-        answerLines.push(autoPausedReason)
-        answerLines.push('')
+        fixedTop.push(autoPausedReason)
+        fixedTop.push('')
       }
-      for (const ln of currentAnswerText().split('\n')) {
-        answerLines.push(trunc(ln, 76))
-      }
-      answerLines.push('')
-      answerLines.push('[tap] 新一輪  [2x] 延伸')
-      return answerLines.join('\n')
+      const fixedBottom = ['', '[tap] 新一輪  [2x] 延伸']
+      const fixedBytes = new TextEncoder().encode(
+        [...fixedTop, ...fixedBottom].join('\n'),
+      ).length + 1 // +1：answer 區與上下區之間的換行
+      const budget = GLASSES_CONTENT_MAX_BYTES - fixedBytes
+      const answerLines = fitTailByBytes(
+        currentAnswerText().split('\n').map(ln => trunc(ln, 76)),
+        budget,
+      )
+      return [...fixedTop, ...answerLines, ...fixedBottom].join('\n')
     }
     const idleLines: string[] = [
       header,
@@ -1141,6 +1149,8 @@ function onTranscriptFrame(e: TranscriptEvent): void {
 
 async function maybeRequestSuggestions(force = false): Promise<void> {
   if (!transport || !isRealMode) return
+  // 併發保護對 forced 也生效 — gate-stop 的強制觸發不與 debounce 觸發重疊
+  if (suggestionInFlight) return
   const fire = force || shouldRequestSuggestion(
     {
       lastChunkText,

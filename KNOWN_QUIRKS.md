@@ -90,6 +90,29 @@ The return value indicates the call was accepted by the SDK, not that the OS gra
 
 Always serialize render calls through a mutex. The `enqueue()` pattern in `src/even.ts` is the canonical fix.
 
+### Glasses display hard limits (verified against hub.evenrealities.com/docs/build/display, 2026-07-14)
+
+- `textContainerUpgrade`: **2,000-char** content limit, in-place and flicker-free — use it for ALL text updates (still serialized through `enqueue()`).
+- `createStartUpPageContainer` / `rebuildPageContainer`: 1,000 chars.
+- **Full-screen text container shows only ~400–500 characters** — longer content must paginate or scroll-window; the surplus simply isn't visible.
+- List container: ≤20 items × ≤64 chars, **no in-place updates** (any change = full page rebuild). Avoid lists for frequently-updating content.
+- Canvas 576×288 per eye, 4-bit greyscale (16 levels of green).
+- One earlier reading of the Device APIs page suggested a **512-byte** per-call cap; the display doc's 2,000-char figure contradicts it. Until real-device verification, Exo's answer view uses a conservative 512-byte tail window (`GLASSES_CONTENT_MAX_BYTES` + `fitTailByBytes()` in `utterance.ts`) — ~170 Chinese chars, safely inside the ~400-char visible page either way. If the device confirms 2,000 chars, raise the budget to the visible-page size (~400 chars).
+
+**Rule:** any screen that can grow unbounded (Exo's「延伸」layered answers, Phase 8 talk buffer) must budget its render. Phone-side DOM has no such limit — show full text there.
+
+### Single LVGL font — characters outside the font set are silently dropped
+
+No font choice, no sizing, not monospaced. A missing glyph doesn't render as tofu (□) — it just disappears, which silently corrupts Chinese sentences. This is the #1 real-device test for Exo (中文可用性生死線): render a coverage string of common Traditional Chinese + punctuation on day one. If gaps exist → have the Worker prompt instruct the LLM to avoid rare characters, or build a substitution table.
+
+UI symbols: stick to the officially certified set (design guidelines) — progress `━ ─ █▇▆▅▄▃▂▁`, nav `▲△▶▷▼▽◀◁`, select `●○ ■□ ★☆`, borders `╭╮╯╰│─`, suits `♠♣♥♦`. Fake buttons: prefix text with `>`. Glyphs outside this set (e.g. `▣ ◆ ✦ ➤ ◼ …`) risk being dropped by the font.
+
+### Docs list `LONG_PRESS_EVENT` but the JS SDK doesn't expose it (checked through v0.0.12)
+
+hub.evenrealities.com/docs/build/deviceapis describes LONG_PRESS_EVENT alongside CLICK/DOUBLE_CLICK/SCROLL, but `OsEventTypeList` in `@evenrealities/even_hub_sdk` 0.0.10–0.0.12 has no such member (enum ends at IMU_DATA_REPORT=8). Don't guess the wire value — an unknown eventType would be misrouted (eventType 0 fallback = tap).
+
+**Current state in Exo:** `gestureMapFor` already maps `'long-press' → exit` (all states, tested); the glasses adapter just can't emit it yet. When a future SDK exposes the event: wire it in `even.ts`'s sysEvent branch, then remove the transitional "pure-idle double-tap = exit" mapping.
+
 ## Testing
 
 ### Vite HMR can leave stale `bridge.onEvenHubEvent` registrations

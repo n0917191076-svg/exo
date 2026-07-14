@@ -115,11 +115,44 @@ async function bootMocked(initialStorage: Record<string, string> = {}) {
   await new Promise(r => setTimeout(r, 60))
 }
 
+// 殭屍計時器防護：vitest 的 jsdom 計時器回傳 Node Timeout「物件」，
+// 用數字 id 清不掉；vi.resetModules 也不會停掉舊模組的 interval——
+// micTick 會活過測試邊界，靜默 6s 後把 /suggest 打進「下一個測試」的
+// fetch mock。改用包裝追蹤：攔截註冊、afterEach 逐 handle 清除。
+const liveTimers: Array<ReturnType<typeof setTimeout>> = []
+const REAL_SET_INTERVAL = globalThis.setInterval.bind(globalThis)
+const REAL_SET_TIMEOUT = globalThis.setTimeout.bind(globalThis)
+
+beforeEach(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setInterval = ((fn: any, ms?: any, ...args: any[]) => {
+    const h = REAL_SET_INTERVAL(fn, ms, ...args)
+    liveTimers.push(h)
+    return h
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setTimeout = ((fn: any, ms?: any, ...args: any[]) => {
+    const h = REAL_SET_TIMEOUT(fn, ms, ...args)
+    liveTimers.push(h)
+    return h
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any
+})
+
+function drainLiveTimers(): void {
+  for (const h of liveTimers.splice(0)) {
+    clearInterval(h)
+    clearTimeout(h)
+  }
+}
+
 afterEach(() => {
   document.body.innerHTML = ''
   vi.doUnmock('../src/even')
   vi.useRealTimers()
   vi.restoreAllMocks()
+  drainLiveTimers()
 })
 
 describe('Cue plugin with mocked bridge', () => {

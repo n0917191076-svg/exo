@@ -3,6 +3,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_TRIGGER,
+  GLASSES_CONTENT_MAX_BYTES,
+  fitTailByBytes,
   batteryHeaderSuffix,
   createRenderThrottle,
   endsOnSentenceFinalPunct,
@@ -296,5 +298,51 @@ describe('isQuestionZh', () => {
   it('已知限制（v1 接受的誤判）：轉述句含疑問詞會命中', () => {
     // 「他問我什麼時候到」是轉述不是提問 — v1 純規則無法區分，記錄之
     expect(isQuestionZh('他問我什麼時候到')).toBe(true)
+  })
+})
+
+// ─── textContainerUpgrade 512-byte 上限的尾端滾動窗 ─────────────────
+
+describe('fitTailByBytes', () => {
+  const bytes = (t: string) => new TextEncoder().encode(t).length
+
+  it('總量在預算內時原樣返回', () => {
+    const lines = ['甲', '乙', '丙']
+    expect(fitTailByBytes(lines, 100)).toEqual(lines)
+  })
+
+  it('超過預算時保留最新（尾端）行，開頭補「…」', () => {
+    // 每行「x」.repeat 產生固定位元組數，方便算
+    const lines = ['old-old-old-old', 'mid-mid-mid-mid', 'new-new-new-new']
+    const out = fitTailByBytes(lines, 36) // 塞不下三行
+    expect(out[0]).toBe('…')
+    expect(out[out.length - 1]).toBe('new-new-new-new')
+    expect(out).not.toContain('old-old-old-old')
+    expect(bytes(out.join('\n'))).toBeLessThanOrEqual(36)
+  })
+
+  it('中文以 UTF-8 位元組計（每字 3 bytes）', () => {
+    const lines = ['一二三四五', '六七八九十'] // 各 15 bytes，join 後 31
+    expect(fitTailByBytes(lines, 31)).toEqual(lines)
+    const out = fitTailByBytes(lines, 30)
+    expect(out[out.length - 1]).toBe('六七八九十')
+    expect(out).not.toContain('一二三四五')
+  })
+
+  it('單行就超過預算時截該行頭部保留尾端', () => {
+    const long = '甲'.repeat(100) + '結尾'
+    const out = fitTailByBytes([long], 30)
+    expect(out).toHaveLength(1)
+    expect(out[0]!.endsWith('結尾')).toBe(true)
+    expect(bytes(out[0]!)).toBeLessThanOrEqual(30)
+  })
+
+  it('空陣列與 0 預算不炸', () => {
+    expect(fitTailByBytes([], 100)).toEqual([])
+    expect(fitTailByBytes(['x'], 0)).toEqual([])
+  })
+
+  it('GLASSES_CONTENT_MAX_BYTES 為 512（官方 textContainerUpgrade 上限）', () => {
+    expect(GLASSES_CONTENT_MAX_BYTES).toBe(512)
   })
 })

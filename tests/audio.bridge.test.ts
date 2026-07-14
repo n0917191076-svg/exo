@@ -176,12 +176,45 @@ async function bootMocked(initialStorage: Record<string, string> = {}): Promise<
 
 const ORIGINAL_FETCH = globalThis.fetch
 
+// 殭屍計時器防護：vitest 的 jsdom 計時器回傳 Node Timeout「物件」，
+// 用數字 id 清不掉；vi.resetModules 也不會停掉舊模組的 interval——
+// micTick 會活過測試邊界，靜默 6s 後把 /suggest 打進「下一個測試」的
+// fetch mock。改用包裝追蹤：攔截註冊、afterEach 逐 handle 清除。
+const liveTimers: Array<ReturnType<typeof setTimeout>> = []
+const REAL_SET_INTERVAL = globalThis.setInterval.bind(globalThis)
+const REAL_SET_TIMEOUT = globalThis.setTimeout.bind(globalThis)
+
+beforeEach(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setInterval = ((fn: any, ms?: any, ...args: any[]) => {
+    const h = REAL_SET_INTERVAL(fn, ms, ...args)
+    liveTimers.push(h)
+    return h
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  globalThis.setTimeout = ((fn: any, ms?: any, ...args: any[]) => {
+    const h = REAL_SET_TIMEOUT(fn, ms, ...args)
+    liveTimers.push(h)
+    return h
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any
+})
+
+function drainLiveTimers(): void {
+  for (const h of liveTimers.splice(0)) {
+    clearInterval(h)
+    clearTimeout(h)
+  }
+}
+
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH
   document.body.innerHTML = ''
   vi.doUnmock('../src/even')
   vi.useRealTimers()
   vi.restoreAllMocks()
+  drainLiveTimers()
 })
 
 // CHUNK_BYTES from transport.ts: 16000 sample-rate × 2 bytes × 2.5s = 80_000.
@@ -515,6 +548,44 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(suggestCalls).toHaveLength(0)
     expect(fake.lastRender()).toMatch(/mic off/)
     expect(fake.lastRender()).not.toMatch(/這句要被丟掉/)
+  })
+
+  it('回答視圖尾端滾動窗：超長答案只留最新內容，總量 ≤512 bytes', async () => {
+    // 30 條中文建議 — 全文遠超 512 bytes，眼鏡端必須裁頭留尾
+    const many = Array.from({ length: 30 }, (_, i) => `第${i + 1}條建議內容測試字串`)
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '請詳細說明' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        return new Response(JSON.stringify({ ok: true, suggestions: many }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(2, 10_000)
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 150))
+
+    const out = fake.lastRender()
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(512)
+    expect(out).toContain('第30條建議內容測試字串') // 最新內容永遠可見
+    expect(out).not.toContain('第1條建議內容測試字串') // 最舊的被裁
+    expect(out).toContain('…') // 裁切提示
   })
 
   it('自動收音：final transcript 命中問句 → 立即觸發 /suggest（繞過 debounce）', async () => {

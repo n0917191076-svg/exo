@@ -244,6 +244,51 @@ export function parseNumberedList(text: string): string[] {
   return out.length > 0 ? out : [text.trim()]
 }
 
+// ── 眼鏡渲染的位元組預算 ────────────────────────────────────────────
+
+/**
+ * 官方 Device APIs：textContainerUpgrade 的 content 上限 512 bytes/次，
+ * 超過會被「無聲截斷」（不報錯）。中文 UTF-8 每字 3 bytes，約 170 字就爆。
+ */
+export const GLASSES_CONTENT_MAX_BYTES = 512
+
+const UTF8 = new TextEncoder()
+
+/**
+ * 尾端滾動窗：從最新（尾端）行往回裝，總 UTF-8 位元組（含換行）不超過
+ * maxBytes；有裁切時第一行補「…」提示還有更早內容。單行就超預算時
+ * 截該行頭部保留尾端（延伸功能的最新內容永遠優先可見）。
+ */
+export function fitTailByBytes(lines: string[], maxBytes: number): string[] {
+  if (lines.length === 0 || maxBytes <= 0) return []
+  const size = (t: string) => UTF8.encode(t).length
+  const total = size(lines.join('\n'))
+  if (total <= maxBytes) return lines.slice()
+
+  const ELLIPSIS = '…' // 3 bytes
+  const out: string[] = []
+  let used = size(ELLIPSIS) // 預留裁切提示行
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const cost = size(lines[i]!) + 1 // +1 換行
+    if (used + cost > maxBytes) break
+    out.unshift(lines[i]!)
+    used += cost
+  }
+  if (out.length === 0) {
+    // 最新一行自己就超預算 — 從行尾往前裝字元
+    const last = lines[lines.length - 1]!
+    let acc = ''
+    for (let i = last.length - 1; i >= 0; i -= 1) {
+      const candidate = last[i]! + acc
+      if (size(ELLIPSIS + candidate) > maxBytes) break
+      acc = candidate
+    }
+    return acc.length > 0 ? [ELLIPSIS + acc] : []
+  }
+  out.unshift(ELLIPSIS)
+  return out
+}
+
 // ── Phase 4：中文問句偵測（自動收音模式的觸發條件） ─────────────────
 
 // 疑問詞（多字詞，誤判率低）。單字「幾/哪」另外處理。
