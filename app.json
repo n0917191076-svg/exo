@@ -1,7 +1,7 @@
 {
-  "package_id": "com.philtullai.cue",
+  "package_id": "com.evan.exo",
   "edition": "202601",
-  "name": "Cue",
+  "name": "Exo",
   "version": "0.4.3",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
@@ -9,15 +9,15 @@
   "permissions": [
     {
       "name": "g2-microphone",
-      "desc": "Captures the conversation around you to suggest responses on the glasses display. Audio is streamed to your personal Cloudflare Worker for transcription and never persisted by Cue. Mic is OFF by default and requires explicit per-session opt-in."
+      "desc": "收音用於即時對話輔助：預設採「閘門模式」——只在你按住或單擊開啟時收音，音訊送往你個人部署的 Cloudflare Worker 轉成文字後即丟棄，Exo 不儲存任何錄音。麥克風預設關閉，每次收音都需要你主動觸發，收音中眼鏡與手機都有明顯指示。"
     },
     {
       "name": "network",
-      "desc": "Sends audio + transcript context to the personal Cloudflare Worker (which proxies to Deepgram and OpenAI). Worker URL is configured in phone-side settings; the host below is the deployed cue-worker that the .ehpk is allowed to talk to.",
+      "desc": "將音訊與逐字稿脈絡送到你個人部署的 Cloudflare Worker（由它代理 Deepgram 語音轉文字與 Anthropic 建議生成），金鑰只存在 Worker、不在本 App。下列主機是此 .ehpk 允許連線的已部署 Worker。",
       "whitelist": [
-        "https://cue-worker.tullaipsu.workers.dev"
+        "https://cue-worker.jiazuo.workers.dev"
       ]
     }
   ],
-  "supported_languages": ["en"]
+  "supported_languages": ["en", "zh"]
 }
