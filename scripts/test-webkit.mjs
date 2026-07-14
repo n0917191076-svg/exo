@@ -30,7 +30,7 @@
 import { webkit } from 'playwright'
 import { existsSync, readFileSync } from 'node:fs'
 
-const WORKER_URL = process.env.CUE_WORKER_URL || 'https://cue-worker.tullaipsu.workers.dev'
+const WORKER_URL = process.env.CUE_WORKER_URL || 'https://cue-worker.jiazuo.workers.dev'
 const SHARED_SECRET =
   process.env.SHARED_SECRET ||
   (existsSync('/tmp/cue-shared-secret.txt') ? readFileSync('/tmp/cue-shared-secret.txt', 'utf-8').trim() : '')

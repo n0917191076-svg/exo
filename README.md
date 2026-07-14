@@ -1,111 +1,64 @@
-# Cue
+# Exo — Evan 的 AI 外骨骼
 
-> **Helps you say the right thing.**
+Even Realities G2 智慧眼鏡上的即時對話輔助。對方說話 → 轉文字 → Claude 依「模式＋場景＋知識庫」生成建議 → 逐字顯示在鏡片上，照著講就行。
 
-A multi-mode conversation coach for Even Realities G2 smart glasses. Listens to the conversation, surfaces 2-3 suggested responses on the display in real time. Pick a mode (Date / Argue calm / Sales close / Sting / Listen well / Custom) to shape the suggestions. The app never speaks for you — it offers cues you say in your own voice.
+Fork 自 [Cue](https://github.com/tntpsu/Cue)；開發指南見 `CLAUDE.md`，踩坑筆記見 `KNOWN_QUIRKS.md`。
 
-## Status: v0.4.3 (per-session transcript persistence — review past conversations on phone)
+## 日常使用（Evan 版）
 
-If you've deployed the personal Worker (see `worker-template/README.md`) and pasted its URL + bearer token in phone settings, Cue streams audio over chunked HTTP → Deepgram for transcription, and POSTs your rolling transcript to the Worker's `/suggest` endpoint for LLM suggestions. If those settings are blank or the Worker is unreachable, Cue falls back to the v0.1.0 timer-driven mock suggestions so the app stays demonstrable.
+### 事前設定（手機，設定一次）
+1. 在 Even Hub 開啟 Exo，接受錄音同意畫面。
+2. **Worker**：貼上 Worker URL（`https://cue-worker.jiazuo.workers.dev`）與 Bearer token（Worker 的 SHARED_SECRET）。
+3. **對話設定**：語言（中文／英文＝譯＋英文建議）、模型（Sonnet 聰明／Haiku 快）、回答長度（短≤10字／中≤20字／長≤40字）、目前場景（例：「面試——金融後台主管面」，會原樣進 prompt）。
+4. **知識庫**：Obsidian 寫好 → 貼進「個人資訊」「補充資料」兩框（各上限 6000 字，超過保留尾端）。勾選各模式要掛哪個 KB（工作預設全掛、日常只掛個人、自訂不掛）。
 
-| Version | What's in it |
-|---|---|
-| v0.1.0 | Scaffold, mode picker, privacy opt-in, mic toggle, glasses UI, mock suggestion driver |
-| v0.2.0 | Worker template (Deepgram + LLM bridge), real audio capture via `audioControl`, transport layer, live captions, debounced LLM suggestions. Mock fallback preserved. |
-| v0.2.5 | Test infrastructure: chunked HTTP transport, JSDOM tests, worker integration tests, app.json lint, KNOWN_QUIRKS, WebKit harness for iOS WKWebView parity. |
-| v0.3.0 | End-of-utterance detection (sentence-final punctuation + silence-gap + max-wait), sentence-aware transcript trimming, battery glyph in glasses header, idle auto-pause after 5 min, word-boundary line wrap on suggestions, per-mode bullet glyphs, first-word emphasis. |
-| v0.3.1 | Phone-side `idle-auto-pause-min` setting — was a 5-min hardcode. 0 disables. |
-| v0.3.2 | Battery glyph now appears on idle screen (was only visible mid-session). Mock-bridge JSDOM coverage for v0.3 state machine (auto-pause, mode cycle, foreground re-paint). Stale `wss://` whitelist entry removed (chunked HTTP supplanted WebSocket in v0.2.5). |
-| **v0.3.3** *(current)* | Mock-mode adds a longer-suggestion entry that exercises the v0.3 word-wrap path + custom-mode coverage (no more silent fallback to date-mode). `lint-app-json.mjs` extended to auto-detect whitelist gaps + stale entries by greping `src/`. Regression script gains a `countStateLogs` render-loop liveness assertion (would catch a silent main-loop death). |
-| v0.4.0 *(planned)* | Worker-side dedupe of repeated suggestions, retry/backoff on rate-limit, partial-transcript pulses if Deepgram streaming becomes available. |
-
-## How it works (current v0.2.0)
-
-1. **One-time** — deploy the personal Cloudflare Worker (see [`worker-template/README.md`](worker-template/README.md)). You get a `https://<sub>.workers.dev` URL and a `SHARED_SECRET` bearer.
-2. **Wire it to Cue** — paste both into phone-side settings. (Skip this step and Cue runs in mock mode.)
-3. Open Cue from the Even Hub launcher.
-4. **Privacy notice** appears on first launch — read and accept (or decline) before the mic can be enabled.
-5. Pick a mode in the phone-side settings page.
-6. Put on the glasses, open Cue. The idle screen shows `◉ live` if a Worker is configured, `◌ mock` otherwise.
-7. Tap glasses to start a session. With a Worker, audio streams to Deepgram and you'll see live transcript captions on glasses; suggestions arrive ~6s after each transcript update. Without a Worker, the timer-driven mock fires.
-8. Glasses double-tap when not micced = cycle mode. Ring double-tap during a session = "fresh topics" prompt (date / custom modes).
-9. Glasses double-tap during a session = exit (also stops mic).
-
-## Privacy is a real feature, not boilerplate
-
-- **Mic OFF by default** every session. No exceptions.
-- **Explicit opt-in** required on first launch via a modal.
-- **Mic indicator always visible** when listening — never hidden.
-- **No persistence** of audio — when real STT lands in v0.2, audio streams through and is dropped. Transcripts buffered ≤3 min in Worker memory.
-- **No analytics** that include conversation content.
-- **You are responsible** for ensuring it's legal where you are. Recording someone without their knowledge violates two-party-consent laws in CA, FL, IL, MD, MA, MT, NH, PA, WA, and many countries.
-
-## Modes
-
-| Glyph | Mode | Use it for |
+### 現場操作（眼鏡手勢，閘門收音）
+| 手勢 | 狀態 | 效果 |
 |---|---|---|
-| ★ | **Date** | Curious, warm. Suggests questions and follow-ups. Ring-tap for fresh topics when stuck. |
-| ◇ | **Argue calm** | Validating, deescalating. For tense conversations. |
-| ▶ | **Sales close** | Listens for objections, suggests handlers. |
-| ⚡ | **Sting** | Sharp witty comebacks. Banter mode. |
-| ● | **Listen well** | Reflective listening prompts ("what I hear is…", "tell me more"). |
-| ◆ | **Custom** | Use your own system prompt (write it in phone settings). |
+| 單擊 | 待命 | 開始收音（對方開始說話時按） |
+| 單擊 | 收音中 | 結束收音＋生成建議（對方說完時按） |
+| 雙擊 | 收音中 | 取消本段（誤觸時用，丟棄不送） |
+| 雙擊 | 回答顯示中 | **延伸**：接續深入一層（可連按逐層加深） |
+| 單擊 | 回答顯示中 | 開始新一輪（清屏） |
+| 雙擊 | 純待命（無回答） | 離開 App |
 
-## Glasses gestures
+手機大按鈕：**按住收音、放開送出、滑出取消**（可盲按）。模式切換只在手機（工作▣／日常●／自訂◆）。建議串流逐字上屏——第一批字出現得比完整生成早。
 
-| Gesture | Action |
-|---|---|
-| Single tap (mic off) | Start mic session |
-| Single tap (mic on) | Stop mic session |
-| Double tap (mic off) | Cycle to next mode |
-| Ring double tap (mic on) | Request fresh topics (proactive — date / custom modes) |
-| Glasses double tap (mic on) | Exit app (also stops mic) |
+### 進階開關（設定頁）
+- **閘門模式**（預設開）：只收對方說話的片段，整段視為對方——省語者分離的成本與延遲。關閉→連續收音＋[A]/[B] 語者標籤與「Calibrate me」錨定。
+- **自動收音**（預設關）：安靜場合用。持續聽，偵測到問句自動生成建議；靜默 8 秒後單擊＝要聊天話題（日常／自訂）；idle 過久自動暫停。
+- **媒體鍵戒指**（實驗，預設關）：藍牙媒體鍵 play/pause＝收音開/關；重啟 App 生效，被宿主擋掉就改用 R1 戒指。
 
-## Development
+### 隱私
+麥克風預設關；每段收音都要主動觸發；收音中眼鏡與手機都有指示；音訊經你自己的 Worker 轉文字後即丟棄，API 金鑰只存在 Worker secrets。錄音合法性依所在地法規自負。
+
+## 開發
 
 ```bash
 npm install
-npm run dev          # Vite dev server on :5176
-npm run build        # tsc + vite build
-npm run pack         # evenhub pack → cue.ehpk
-npm run deploy       # build + pack
-npm test             # Vitest unit tests
-npm run test:watch   # Vitest watch mode
+npm run dev          # Vite :5176
+npm test             # vitest（182 tests）
+npm run test:e2e     # 模擬器回歸（先起 dev ＋ npx evenhub-simulator --automation-port 9897 http://localhost:5176）
+npm run test:webkit  # WebKit harness（需 SHARED_SECRET，打線上 Worker）
+npm run pack         # lint + 打包 exo.ehpk
+cd worker-template && npx wrangler deploy   # 部署 Worker
 ```
 
-Test on real glasses via QR:
-```bash
-npx evenhub qr --url http://<your-mac-lan-ip>:5176
-```
+Worker 端點：`POST /transcribe?lang=zh|en&gated=1|0`、`POST /suggest`（預設串流純文字，`?stream=0` 回 JSON）、`GET /healthz`。secrets：`SHARED_SECRET`、`DEEPGRAM_API_KEY`、`ANTHROPIC_API_KEY`（各自 `npx wrangler secret put <名稱>`）。
 
-Test in simulator:
-```bash
-npx evenhub-simulator --glow http://localhost:5176
-```
+實機 QR 熱載：`npx evenhub qr --url http://<LAN-IP>:5176`
 
-## Source files
+## 原始碼地圖
 
-| File | Purpose |
+| 檔案 | 職責 |
 |---|---|
-| `src/main.ts` | Entry, state machine, phone settings UI, glasses render |
-| `src/even.ts` | Glasses bridge wrapper (text container, input routing, mic capture, battery) |
-| `src/transport.ts` | Worker transport — chunked HTTP POST for audio + REST for suggestions |
-| `src/modes.ts` | Mode registry — id, label, glyph, system prompt, behavior flags |
-| `src/utterance.ts` | Pure heuristics — end-of-utterance trigger, sentence-aware trim, word wrap, battery glyph |
-| `src/mock.ts` | Mock-mode timer-driven canned suggestions (fallback when Worker unset) |
-| `src/storage.ts` | Native `setLocalStorage` wrapper for mode + privacy + Worker config |
-| `worker-template/` | Cloudflare Worker source — Deepgram + `/suggest` LLM bridge |
-| `tests/*.test.ts` | Vitest unit tests (54 passing) |
-| `scripts/regression.mjs` | Simulator-driven e2e flow check (mock-fallback path, 4/4) |
+| `src/main.ts` | 狀態機、手機設定 UI、眼鏡渲染、觸發 dispatcher |
+| `src/even.ts` | 眼鏡橋接（`enqueue()` 序列化渲染——高危勿動） |
+| `src/transport.ts` | 音訊切塊 HTTP POST、/suggest 串流讀取 |
+| `src/triggers.ts` | 手勢→語意對照表（`gestureMapFor`）、TriggerSource 介面 |
+| `src/modes.ts` | 模式庫（work／daily／custom，繁中 prompt） |
+| `src/utterance.ts` | 純函式：斷句、問句偵測、渲染節流、換行 |
+| `src/storage.ts` | 設定持久化（bridge KV＋localStorage fallback） |
+| `worker-template/` | Cloudflare Worker（Deepgram＋Anthropic 代理） |
 
-## Roadmap
-
-Full plan in `~/Documents/Pulse/ROADMAP.md` § "Plan: Cue". Remaining for v0.4+:
-- Worker-side dedupe of suggestions repeating the same advice
-- Retry/backoff on Deepgram or LLM rate-limit
-- Partial-transcript pulses if streaming-Deepgram path becomes viable on WKWebView
-- Phone-side IDLE_AUTO_PAUSE_MS setting (currently a 5-min hardcode)
-
-## Packaging note
-
-The Worker URL is per-user (each deployer gets their own `*.workers.dev` subdomain). Before running `npm run pack`, replace `https://your-cue-worker.example.workers.dev` in `app.json`'s `permissions[].whitelist` with your own Worker URL — otherwise the WebView in the packaged build will block the request.
+進度：Phase 0–5 完成（環境／中文化／知識庫／串流／閘門觸發／打包）。待做：Phase 6 網頁版、Phase 7 圖片直答（solve）、Phase 8 教學（guide）與演講（talk）模式——規格見 `CLAUDE.md`。
