@@ -21,7 +21,7 @@ interface FakeRuntime {
   onSwipe: (h: (dir: string, src: string) => void) => void
   onDoubleTap: (h: (src: string) => void) => void
   onForeground: (h: () => void) => void
-  startMic: (h: (frame: Uint8Array) => void) => Promise<boolean>
+  startMic: (h: (frame: Uint8Array) => void, source?: string) => Promise<boolean>
   stopMic: () => Promise<void>
   exitApp: () => Promise<void>
   getStorage: (k: string) => Promise<string>
@@ -39,6 +39,7 @@ interface FakeBridge {
   lastRender: () => string
   micActive: () => boolean
   exitCalls: () => number
+  lastMicSource: () => string | undefined
   // Mutators for test scenarios.
   setBattery: (n: number | undefined) => void
 }
@@ -50,6 +51,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
   let lastRendered = ''
   let mic = false
   let exits = 0
+  let micSource: string | undefined
   let battery = initialBattery
   const storage: Record<string, string> = {}
 
@@ -59,7 +61,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
     onSwipe: () => {},
     onDoubleTap: h => { doubleTapHandler = h },
     onForeground: h => { foregroundHandler = h },
-    startMic: async () => { mic = true; return true },
+    startMic: async (_h, source?: string) => { mic = true; micSource = source; return true },
     stopMic: async () => { mic = false },
     exitApp: async () => { exits += 1 },
     getStorage: async k => storage[k] ?? '',
@@ -74,6 +76,7 @@ function createFakeBridge(initialBattery: number | undefined = 80): FakeBridge {
     lastRender: () => lastRendered,
     micActive: () => mic,
     exitCalls: () => exits,
+    lastMicSource: () => micSource,
     setBattery: n => { battery = n },
   }
 }
@@ -307,6 +310,41 @@ describe('Cue plugin with mocked bridge', () => {
     expect(fake.lastRender()).toMatch(/mic off/)
     // cancel — 不保留任何建議
     expect(fake.lastRender()).toMatch(/suggestions=0|\[tap\] start mic/)
+  })
+
+  it('收音來源：預設把 glasses 傳給 even.startMic', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastMicSource()).toBe('glasses')
+  })
+
+  it('收音來源：設定 phone 時傳 phone（手機麥克風）', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (String(url).includes('/healthz')) return new Response('ok', { status: 200 })
+      return new Response(JSON.stringify({ ok: true, text: '' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:audio-source:v1': 'phone',
+    })
+    fake.invokeTap('glasses')
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastMicSource()).toBe('phone')
   })
 
   it('Phase 4：媒體鍵 flag 預設關 — 不建立無聲 audio、不註冊 mediaSession', async () => {

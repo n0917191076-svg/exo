@@ -6,9 +6,11 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  getAudioSource,
   getAutoListen,
   getGatedMode,
   getMediaKeyFlag,
+  setAudioSource,
   setAutoListen,
   setGatedMode,
   setMediaKeyFlag,
@@ -59,5 +61,19 @@ describe('媒體鍵 feature flag', () => {
   it('round-trip', async () => {
     await setMediaKeyFlag(true)
     expect(await getMediaKeyFlag()).toBe(true)
+  })
+})
+
+describe('收音來源（audioControl 第二參數）', () => {
+  it('預設眼鏡', async () => {
+    expect(await getAudioSource()).toBe('glasses')
+  })
+  it('round-trip phone', async () => {
+    await setAudioSource('phone')
+    expect(await getAudioSource()).toBe('phone')
+  })
+  it('非法值回退 glasses', async () => {
+    globalThis.localStorage.setItem('cue:audio-source:v1', 'toaster')
+    expect(await getAudioSource()).toBe('glasses')
   })
 })

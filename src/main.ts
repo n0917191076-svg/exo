@@ -28,6 +28,7 @@ import {
   getWorkerUrl,
   hasAgreedToPrivacy,
   setAnswerLength,
+  setAudioSource,
   setAutoListen,
   setCustomPrompt,
   setGatedMode,
@@ -43,6 +44,7 @@ import {
   setPrivacyAgreed,
   appendSessionRecord,
   clearSessionHistory,
+  getAudioSource,
   getAutoListen,
   getCalibrating,
   getGatedMode,
@@ -55,6 +57,7 @@ import {
   setWorkerToken,
   setWorkerUrl,
   type AnswerLength,
+  type AudioSource,
   type KbAttach,
   type LangMode,
   type ModelChoice,
@@ -148,6 +151,8 @@ let gatedMode = true
 // 自動收音（預設關）：持續聽、問句偵測命中即觸發。依賴語者錨定 —
 // /transcribe 走 diarize 路徑（effectiveGated 為 false）。
 let autoListen = false
+// 收音來源（audioControl 第二參數）：眼鏡（預設）或手機麥克風
+let audioSource: AudioSource = 'glasses'
 let extendedText = ''
 
 // 自動收音開啟時強制 diarize 流程（語者錨定依賴 utterances）
@@ -382,6 +387,14 @@ root.innerHTML = `
         </label>
         <p style="color: #7b7b7b; font-size: .85em; margin: 0;">開啟時走語者標籤流程（略過閘門），沿用 idle 自動暫停避免忘記關。</p>
 
+        <label>收音來源
+          <select id="audio-source" style="padding: .35rem; margin-left: .5rem;">
+            <option value="glasses">眼鏡麥克風（預設）</option>
+            <option value="phone">手機麥克風</option>
+          </select>
+        </label>
+        <p style="color: #7b7b7b; font-size: .85em; margin: 0;">下次收音生效。手機麥克風適合眼鏡收音不穩或想省眼鏡電量時。</p>
+
         <label style="display: flex; align-items: center; gap: .5rem; cursor: pointer;">
           <input id="media-key" type="checkbox" />
           媒體鍵戒指（實驗性）：藍牙媒體鍵 play/pause＝收音開/關
@@ -594,6 +607,11 @@ calibrateBtn.addEventListener('click', async () => {
 
 const gatedModeInput = document.querySelector<HTMLInputElement>('#gated-mode')!
 const autoListenInput = document.querySelector<HTMLInputElement>('#auto-listen')!
+const audioSourceSelect = document.querySelector<HTMLSelectElement>('#audio-source')!
+audioSourceSelect.addEventListener('change', async () => {
+  audioSource = audioSourceSelect.value === 'phone' ? 'phone' : 'glasses'
+  await setAudioSource(audioSource)
+})
 const mediaKeyInput = document.querySelector<HTMLInputElement>('#media-key')!
 mediaKeyInput.addEventListener('change', async () => {
   await setMediaKeyFlag(mediaKeyInput.checked)
@@ -1070,7 +1088,7 @@ async function startRealSession(): Promise<void> {
   // sendAudioFrame; transport buffers and POSTs every CHUNK_MS.
   const ok = await even.startMic(frame => {
     transport?.sendAudioFrame(frame)
-  })
+  }, audioSource)
   if (!ok) {
     lastTranscript = '(mic permission denied)'
     isRealMode = false
@@ -1434,6 +1452,8 @@ async function bootstrap(): Promise<void> {
   gatedModeInput.checked = gatedMode
   autoListen = await getAutoListen()
   autoListenInput.checked = autoListen
+  audioSource = await getAudioSource()
+  audioSourceSelect.value = audioSource
   // Phase 4：媒體鍵 flag（預設關）— 開了才啟動 MediaSession 路線
   const mediaKeyOn = await getMediaKeyFlag()
   mediaKeyInput.checked = mediaKeyOn

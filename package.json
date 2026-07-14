@@ -33,6 +33,6 @@
     "vitest": "^4.1.5"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.10"
+    "@evenrealities/even_hub_sdk": "^0.0.12"
   }
 }

@@ -4,6 +4,7 @@
 // state logs for the regression harness).
 
 import {
+  AudioInputSource,
   CreateStartUpPageContainer,
   EventSourceType,
   OsEventTypeList,
@@ -35,7 +36,7 @@ export interface EvenRuntime {
   onForeground: (handler: () => void) => void
   // Mic capture. Calling startMic emits PCM frames to the registered handler
   // until stopMic. Caller is responsible for routing frames to STT.
-  startMic: (handler: (frame: AudioFrame) => void) => Promise<boolean>
+  startMic: (handler: (frame: AudioFrame) => void, source?: 'glasses' | 'phone') => Promise<boolean>
   stopMic: () => Promise<void>
   exitApp: () => Promise<void>
   getStorage: (key: string) => Promise<string>
@@ -172,10 +173,15 @@ export async function connectEvenRuntime(initial: string): Promise<EvenRuntime |
     onSwipe(h) { swipeHandler = h },
     onDoubleTap(h) { doubleTapHandler = h },
     onForeground(h) { foregroundHandler = h },
-    async startMic(handler) {
+    async startMic(handler, source) {
       audioHandler = handler
       try {
-        const ok = await bridge.audioControl(true)
+        // SDK 0.0.12：audioControl 第二參數選收音來源（眼鏡/手機麥克風）。
+        // 未指定時維持 SDK 預設（眼鏡）。
+        const ok = await bridge.audioControl(
+          true,
+          source === 'phone' ? AudioInputSource.Phone : source === 'glasses' ? AudioInputSource.Glasses : undefined,
+        )
         return !!ok
       } catch {
         audioHandler = null

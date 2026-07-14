@@ -4,12 +4,16 @@
   "name": "Exo",
   "version": "0.4.3",
   "min_app_version": "2.0.0",
-  "min_sdk_version": "0.0.10",
+  "min_sdk_version": "0.0.12",
   "entrypoint": "index.html",
   "permissions": [
     {
       "name": "g2-microphone",
       "desc": "收音用於即時對話輔助：預設採「閘門模式」——只在你按住或單擊開啟時收音，音訊送往你個人部署的 Cloudflare Worker 轉成文字後即丟棄，Exo 不儲存任何錄音。麥克風預設關閉，每次收音都需要你主動觸發，收音中眼鏡與手機都有明顯指示。"
+    },
+    {
+      "name": "phone-microphone",
+      "desc": "「收音來源」選手機時改用手機麥克風收音（眼鏡收音不穩或省眼鏡電量時用），行為與眼鏡收音相同：閘門觸發、轉文字後即丟棄。"
     },
     {
       "name": "network",
@@ -19,5 +23,8 @@
       ]
     }
   ],
-  "supported_languages": ["en", "zh"]
+  "supported_languages": [
+    "en",
+    "zh"
+  ]
 }

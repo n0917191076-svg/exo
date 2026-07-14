@@ -335,3 +335,15 @@ export async function getMediaKeyFlag(): Promise<boolean> {
 export async function setMediaKeyFlag(on: boolean): Promise<void> {
   await writeRaw(KEY_MEDIA_KEY, on ? '1' : '0')
 }
+
+// 收音來源 — audioControl 第二參數（SDK 0.0.12 的 AudioInputSource）。
+// 預設眼鏡；手機麥克風供眼鏡收音不穩或想省眼鏡電時用。
+const KEY_AUDIO_SOURCE = 'cue:audio-source:v1'
+export type AudioSource = 'glasses' | 'phone'
+export async function getAudioSource(): Promise<AudioSource> {
+  const raw = await readRaw(KEY_AUDIO_SOURCE)
+  return raw === 'phone' ? 'phone' : 'glasses'
+}
+export async function setAudioSource(src: AudioSource): Promise<void> {
+  await writeRaw(KEY_AUDIO_SOURCE, src)
+}
