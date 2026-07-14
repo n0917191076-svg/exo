@@ -305,3 +305,33 @@ export async function getKbAttach(): Promise<Record<ModeId, KbAttach>> {
 export async function setKbAttach(map: Record<ModeId, KbAttach>): Promise<void> {
   await writeRaw(KEY_KB_ATTACH, JSON.stringify(map))
 }
+
+// ── Phase 4（Exo）：閘門模式 / 自動收音 / 媒體鍵 flag ────────────────
+
+const KEY_GATED_MODE = 'cue:gated-mode:v1'
+const KEY_AUTO_LISTEN = 'cue:auto-listen:v1'
+const KEY_MEDIA_KEY = 'cue:media-key:v1'
+
+// 閘門收音是產品核心設計 — 預設開；未設定（null）視為開。
+export async function getGatedMode(): Promise<boolean> {
+  return (await readRaw(KEY_GATED_MODE)) !== '0'
+}
+export async function setGatedMode(on: boolean): Promise<void> {
+  await writeRaw(KEY_GATED_MODE, on ? '1' : '0')
+}
+
+// 自動收音預設關 — 隱私鐵律：麥克風預設 OFF。
+export async function getAutoListen(): Promise<boolean> {
+  return (await readRaw(KEY_AUTO_LISTEN)) === '1'
+}
+export async function setAutoListen(on: boolean): Promise<void> {
+  await writeRaw(KEY_AUTO_LISTEN, on ? '1' : '0')
+}
+
+// 媒體鍵 MediaSession 駭法是實驗路線 — 預設關。
+export async function getMediaKeyFlag(): Promise<boolean> {
+  return (await readRaw(KEY_MEDIA_KEY)) === '1'
+}
+export async function setMediaKeyFlag(on: boolean): Promise<void> {
+  await writeRaw(KEY_MEDIA_KEY, on ? '1' : '0')
+}
