@@ -149,6 +149,49 @@ export function wrapWords(text: string, width: number, maxLines: number): string
   return out
 }
 
+/**
+ * Wrap a complete answer for the glasses display without discarding text.
+ * Existing paragraph breaks are preserved, including one blank separator.
+ */
+export function wrapAnswerLines(text: string, width: number): string[] {
+  if (width <= 0) return []
+  const lines: string[] = []
+
+  for (const raw of text.split(/\r?\n/)) {
+    let rest = raw.trim()
+    if (!rest) {
+      if (lines.length > 0 && lines.at(-1) !== '') lines.push('')
+      continue
+    }
+    while (rest.length > width) {
+      const candidate = rest.slice(0, width + 1)
+      const boundary = candidate.lastIndexOf(' ')
+      let cut = boundary > 0 ? boundary : width
+      if (boundary > 0) {
+        // Keep adjacent uppercase terms such as READ ONLY / TAKE ACTION
+        // together when moving the first term to the next line will fit both.
+        const beforeBoundary = rest.slice(0, boundary).trimEnd()
+        const previousBoundary = beforeBoundary.lastIndexOf(' ')
+        const leftTerm = beforeBoundary.slice(previousBoundary + 1)
+        const rightTerm = /^[A-Z][A-Z0-9-]*/.exec(rest.slice(boundary + 1))?.[0]
+        if (
+          previousBoundary > 0
+          && /^[A-Z][A-Z0-9-]*$/.test(leftTerm)
+          && rightTerm
+          && leftTerm.length + 1 + rightTerm.length <= width
+        ) {
+          cut = previousBoundary
+        }
+      }
+      lines.push(rest.slice(0, cut).trimEnd())
+      rest = rest.slice(cut).trimStart()
+    }
+    if (rest) lines.push(rest)
+  }
+
+  return lines
+}
+
 // --- conversation accumulation (v0.4.0) ---
 //
 // Per-speaker rolling buffer for transcript display. Same-speaker turns

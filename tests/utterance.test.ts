@@ -14,6 +14,7 @@ import {
   singleAnswerFromText,
   shouldRequestSuggestion,
   trimToSentences,
+  wrapAnswerLines,
   wrapWords,
   type UtteranceSignal,
 } from '../src/utterance'
@@ -317,6 +318,30 @@ describe('isQuestionZh', () => {
   it('已知限制（v1 接受的誤判）：轉述句含疑問詞會命中', () => {
     // 「他問我什麼時候到」是轉述不是提問 — v1 純規則無法區分，記錄之
     expect(isQuestionZh('他問我什麼時候到')).toBe(true)
+  })
+})
+
+describe('wrapAnswerLines', () => {
+  it('chunks a Chinese paragraph without losing characters', () => {
+    const text = '甲'.repeat(85)
+    const lines = wrapAnswerLines(text, 38)
+    expect(lines).toHaveLength(3)
+    expect(lines.every(line => line.length <= 38)).toBe(true)
+    expect(lines.join('')).toBe(text)
+  })
+
+  it('wraps English on a word boundary when possible', () => {
+    const lines = wrapAnswerLines('READ ONLY becomes TAKE ACTION through connected tools', 20)
+    expect(lines.every(line => line.length <= 20)).toBe(true)
+    expect(lines.join(' ')).toBe('READ ONLY becomes TAKE ACTION through connected tools')
+  })
+
+  it('preserves one blank separator between translation and English answer', () => {
+    expect(wrapAnswerLines('譯：你好\n\nHello there.', 38)).toEqual([
+      '譯：你好',
+      '',
+      'Hello there.',
+    ])
   })
 })
 

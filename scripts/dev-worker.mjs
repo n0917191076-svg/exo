@@ -16,7 +16,7 @@
 //   GET  /healthz   → "ok"
 //   POST /transcribe → canned 2-speaker utterances, rotating, timestamped
 //                      so each call shows new text on the glasses.
-//   POST /suggest    → mode-aware canned suggestions (3-tuple).
+//   POST /suggest    → mode-aware canned suggestion (one complete answer).
 //
 // Pure Node http — no dependencies. Logs each request with byte count
 // and wall-clock latency so you can see chunking happen in real time.
@@ -60,23 +60,17 @@ const TRANSCRIBE_FIXTURES = [
 ]
 
 // Per-mode canned suggestions. Stand-ins for the LLM output the real
-// worker produces — kept short and shape-correct so the glasses render
+// worker produces — one complete answer per mode so the glasses render
 // matches what the user will see in production.
 const SUGGEST_FIXTURES = {
   work: [
-    '結論：我有八年產線管理經驗。',
-    '我在 AI 投資競賽拿過第一名。',
-    '我的強項是數據分析與風控。',
+    '我是葉家佐，有八年製造產線督導經驗，也持續累積數據分析與金融風控能力。我曾以 Stacking 集成模型拿下輔大 AI 投資競賽第一名，並取得 WorldQuant Gold；我希望把現場異常管理、量化分析與風險意識，轉化成金融後台或數據職務的實際價值。',
   ],
   daily: [
-    '最近在忙求職，還算充實。',
-    '有在研究投資和 AI 的東西。',
-    '你呢？最近過得怎樣？',
+    '最近我在忙求職，也繼續讀經濟系和研究投資、AI，日子過得蠻充實的。我會把新學到的東西做成小實驗，所以雖然忙，但每週都看得到自己有一點進步；你最近過得怎麼樣？',
   ],
   custom: [
-    '（自訂 prompt — 第一條回覆）',
-    '（自訂 prompt — 第二條回覆）',
-    '（自訂 prompt — 第三條回覆）',
+    '這是自訂模式的本地模擬回答：實際使用時，Exo 會套用你設定的角色、立場與語氣，輸出一段可以直接照著說的完整回答，不會以多個編號選項取代完整思路。',
   ],
 }
 
@@ -143,8 +137,8 @@ export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
       const mode = payload.mode ?? 'work'
       const suggestions = SUGGEST_FIXTURES[mode] ?? SUGGEST_FIXTURES.work
       if (latencyMs > 0) await new Promise(r => setTimeout(r, latencyMs))
-      // Phase 3：預設模擬 Worker 的 chunked 純文字串流（逐段送出編號
-      // 清單，間隔 ~30ms 模擬逐字）；?stream=0 回舊 JSON。
+      // Phase 3：預設模擬 Worker 的 chunked 純文字串流（逐段送出
+      // 單一完整回答，間隔 ~30ms 模擬逐字）；?stream=0 回舊 JSON。
       const wantStream = !(req.url ?? '').includes('stream=0')
       if (wantStream) {
         logger({ method, url, status: 200, mode, transcript: payload.transcript ?? '', ms: Date.now() - t0, stream: true })
@@ -154,7 +148,7 @@ export function createDevWorker({ latencyMs = 0, logger = () => {} } = {}) {
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Authorization, Content-Type',
         })
-        const full = suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')
+        const full = suggestions[0]
         // 切 4 段逐段 write，讓 client 端真的收到多個 chunk
         const step = Math.ceil(full.length / 4)
         for (let i = 0; i < full.length; i += step) {
