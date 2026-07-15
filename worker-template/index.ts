@@ -1,3 +1,5 @@
+import { buildSuggestPrompt } from './suggestion-policy'
+
 // Cue personal Cloudflare Worker — proxies the glasses-to-Deepgram audio
 // stream + caches the rolling transcript so the LLM call can use it as
 // context. Each Cue user deploys their own Worker with their own
@@ -194,46 +196,17 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   if (!body.transcript || typeof body.transcript !== 'string') {
     return jsonResponse(400, { ok: false, error: 'transcript required' })
   }
-  // v0.4.2: client passes its rolling list of recent suggestions; we
-  // append a "don't repeat these" instruction to the system prompt so
-  // the LLM doesn't re-surface the same phrasing.
-  const baseSystem = body.customPrompt?.trim() || systemPromptForMode(body.mode ?? 'work')
-  const recent = (body.recentSuggestions ?? []).filter(s => typeof s === 'string').slice(-12)
-  const dedupeNote = recent.length > 0
-    ? `\n\nDO NOT repeat any of these recent suggestions verbatim or near-verbatim — find a different angle:\n${recent.map(s => `- ${s}`).join('\n')}`
-    : ''
-
-  // Phase 1：場景說明 → 長度規則 → 語言分支，依序附加在 system prompt 後
-  const lang = body.lang === 'en' ? ('en' as const) : ('zh' as const)
-  const sceneBlock = body.sceneNote?.trim()
-    ? `\n\n【目前場景】${body.sceneNote.trim()}`
-    : ''
-  // Phase 2：KB 區塊。plugin 端已依模式勾選過濾＋截斷；這裡防禦性再截
-  // 尾端 6000（plugin 傳什麼不可信）。組裝順序：模式 prompt → 場景 →
-  // KB → （長度/語言規則）→ 去重；逐字稿在 user message。
-  const kbPersonal = tailTruncate((body.kbPersonal ?? '').trim(), 6000)
-  const kbExtra = tailTruncate((body.kbExtra ?? '').trim(), 6000)
-  const kbBlock =
-    (kbPersonal ? `\n\n【個人資訊】\n${kbPersonal}` : '') +
-    (kbExtra ? `\n\n【補充資料】\n${kbExtra}` : '')
-  // Phase 4：延伸（extend）— 回答顯示中雙擊。要求接續深入、不重複。
-  const extendBlock = body.extendContext?.trim()
-    ? '\n\n使用者要求在以下回答的基礎上接續深入，直接給出更深一層的內容，' +
-      '不要重複已說過的內容：\n' + body.extendContext.trim()
-    : ''
-  const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
-    short: { zh: '每條建議 ≤10 個字。', en: 'Each suggestion must be at most 10 words.' },
-    medium: { zh: '每條建議 ≤20 個字。', en: 'Each suggestion must be at most 20 words.' },
-    long: { zh: '每條建議 ≤40 個字。', en: 'Each suggestion must be at most 40 words.' },
-  }
-  const lengthRule = LENGTH_RULES[body.length ?? 'medium'] ?? LENGTH_RULES.medium!
-  const lengthBlock = `\n\n${lang === 'en' ? lengthRule.en : lengthRule.zh}`
-  // 英文模式：翻譯必須放第 1 條編號項，否則會被 parseNumberedList 濾掉
-  const langBlock = lang === 'en'
-    ? '\n\n對方說的是英文。輸出格式：第 1 條必須是「譯：<對方那句話的中文翻譯>」；' +
-      '第 2、3 條為英文回答建議，用簡單詞彙（CEFR B1 以內），使用者可直接照念。'
-    : ''
-  const systemPrompt = baseSystem + sceneBlock + kbBlock + extendBlock + lengthBlock + langBlock + dedupeNote
+  const { systemPrompt, lang } = buildSuggestPrompt({
+    mode: body.mode,
+    customPrompt: body.customPrompt,
+    recentSuggestions: body.recentSuggestions,
+    sceneNote: body.sceneNote,
+    length: body.length,
+    lang: body.lang,
+    kbPersonal: body.kbPersonal,
+    kbExtra: body.kbExtra,
+    extendContext: body.extendContext,
+  })
 
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
@@ -257,25 +230,6 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
 
 const ALLOWED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6']
 const DEFAULT_MODEL = 'claude-sonnet-4-6'
-
-// KB 超長時從頭截斷保留尾端（新資訊通常貼在後面）。
-function tailTruncate(s: string, max: number): string {
-  return s.length > max ? s.slice(s.length - max) : s
-}
-
-function systemPromptForMode(mode: string): string {
-  // plugin 端 src/modes.ts 的鏡像 — plugin 沒帶 customPrompt 時的保底。
-  const PROMPTS: Record<string, string> = {
-    work:
-      '你是使用者的即時對話助手，情境是工作場合（面試、會議、簡報），目標是顯得專業：回答精準、有結構。' +
-      '不用猶疑語（「我覺得」「可能」「應該吧」這類）；STAR 結構僅在自然時使用。' +
-      '給 2–3 條建議，每條能直接照著念；先講結論；不加前言；編號清單輸出，每條一行。',
-    daily:
-      '你是使用者的即時對話助手，情境是日常閒聊，口語、放鬆、像朋友聊天。' +
-      '給 2–3 條建議，每條能直接照著念；先講結論；不加前言；編號清單輸出，每條一行。',
-  }
-  return PROMPTS[mode] ?? PROMPTS.work!
-}
 
 async function callAnthropic(
   apiKey: string,
