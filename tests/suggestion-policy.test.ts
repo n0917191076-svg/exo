@@ -48,20 +48,26 @@ describe('single-answer Worker prompt policy', () => {
   })
 
   it.each([
-    ['short', '80–120 個中文字'],
-    ['medium', '180–240 個中文字'],
-    ['long', '320–420 個中文字'],
-  ])('maps Chinese %s length', (length, expected) => {
-    expect(buildSuggestPrompt({ mode: 'work', lang: 'zh', length }).systemPrompt).toContain(expected)
+    ['short', '80–120 個中文字', 120],
+    ['medium', '180–240 個中文字', 240],
+    ['long', '320–420 個中文字', 420],
+  ])('maps Chinese %s length with a mandatory hard ceiling', (length, range, maximum) => {
+    const prompt = buildSuggestPrompt({ mode: 'work', lang: 'zh', length }).systemPrompt
+    expect(prompt).toContain(range)
+    expect(prompt).toContain(`硬性上限為 ${maximum} 個字元，絕對不得超過`)
+    expect(prompt).toMatch(/計數包含標點符號與英文術語/)
+    expect(prompt).toMatch(/刪除次要細節.*上限內.*完整/)
   })
 
   it.each([
-    ['short', '30–45 words'],
-    ['medium', '70–100 words'],
-    ['long', '130–170 words'],
-  ])('maps English %s length', (length, expected) => {
+    ['short', '30–45 words', 45],
+    ['medium', '70–100 words', 100],
+    ['long', '130–170 words', 170],
+  ])('maps English %s length with a mandatory hard ceiling', (length, range, maximum) => {
     const prompt = buildSuggestPrompt({ mode: 'work', lang: 'en', length }).systemPrompt
-    expect(prompt).toContain(expected)
+    expect(prompt).toContain(range)
+    expect(prompt).toContain(`The hard maximum is ${maximum} words, excluding the translation line, and must never be exceeded.`)
+    expect(prompt).toContain('Delete secondary details to keep the answer complete within that maximum.')
     expect(prompt).toMatch(/第一行.*譯：/)
     expect(prompt).toMatch(/一個完整英文回答/)
     expect(prompt).toMatch(/CEFR B1/)
