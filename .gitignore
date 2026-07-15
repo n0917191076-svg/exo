@@ -53,3 +53,6 @@ tests/screenshots-regression/
 *.sln
 *.sw?
 worker-template/.dev.vars
+
+# Local isolated development worktrees
+.worktrees/
