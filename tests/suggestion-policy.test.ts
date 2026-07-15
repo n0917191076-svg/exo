@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSuggestPrompt } from '../worker-template/suggestion-policy'
+import { buildSuggestPrompt, singleAnswerFromText } from '../worker-template/suggestion-policy'
 
 describe('single-answer Worker prompt policy', () => {
   it.each(['work', 'daily', 'custom'])('%s enforces one unnumbered answer', mode => {
@@ -73,5 +73,15 @@ describe('single-answer Worker prompt policy', () => {
     expect(systemPrompt).toMatch(/例如/)
     expect(systemPrompt).toMatch(/不得.*具體.*數字|不得.*精確.*數據/)
     expect(systemPrompt).toMatch(/逐字稿.*場景.*知識庫/)
+  })
+})
+
+describe('Worker single-answer normalization', () => {
+  it('keeps all model text as one answer even if it contains numbered lines', () => {
+    expect(singleAnswerFromText('1. 第一段\n2. 第二段')).toEqual(['1. 第一段\n2. 第二段'])
+  })
+
+  it('rejects whitespace-only model text', () => {
+    expect(singleAnswerFromText(' \n ')).toEqual([])
   })
 })

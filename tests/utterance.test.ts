@@ -9,7 +9,9 @@ import {
   createRenderThrottle,
   endsOnSentenceFinalPunct,
   isQuestionZh,
+  normalizeSuggestionArray,
   parseNumberedList,
+  singleAnswerFromText,
   shouldRequestSuggestion,
   trimToSentences,
   wrapWords,
@@ -187,6 +189,23 @@ describe('parseNumberedList', () => {
   it('空字串回空陣列', () => {
     expect(parseNumberedList('')).toEqual([])
     expect(parseNumberedList('   \n  ')).toEqual([])
+  })
+})
+
+describe('Plugin single-answer normalization', () => {
+  it('wraps a full multiline response as exactly one element', () => {
+    expect(singleAnswerFromText('譯：你好\n\nHello, it is good to meet you.')).toEqual([
+      '譯：你好\n\nHello, it is good to meet you.',
+    ])
+  })
+
+  it('joins a legacy Worker array without adding numbering', () => {
+    expect(normalizeSuggestionArray(['甲', '乙'])).toEqual(['甲\n乙'])
+  })
+
+  it('rejects empty text and empty legacy arrays', () => {
+    expect(singleAnswerFromText('   ')).toEqual([])
+    expect(normalizeSuggestionArray([' ', ''])).toEqual([])
   })
 })
 

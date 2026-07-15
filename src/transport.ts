@@ -1,4 +1,4 @@
-import { parseNumberedList } from './utterance'
+import { normalizeSuggestionArray, singleAnswerFromText } from './utterance'
 
 // Transport layer to the user's personal Cue Worker.
 //
@@ -12,8 +12,8 @@ import { parseNumberedList } from './utterance'
 //      POSTs the raw buffer. Worker wraps as WAV, calls Deepgram batch,
 //      returns { text }. Trade-off vs streaming WS: ~CHUNK_MS latency
 //      added, no interim transcripts.
-//   2. POST /suggest — same as before; sends transcript context, gets
-//      back numbered suggestions list.
+//   2. POST /suggest — sends transcript context and gets one complete
+//      answer while preserving the public suggestions:string[] shape.
 //
 // Both gated on a SHARED_SECRET bearer the user pasted into phone settings.
 // If the user hasn't configured a Worker, transport.ready returns false
@@ -327,7 +327,11 @@ export function createTransport(
         const json = (await resp.json()) as
           | { ok: true; suggestions: string[] }
           | { ok: false; error: string }
-        return json
+        if (!json.ok) return json
+        const suggestions = normalizeSuggestionArray(json.suggestions)
+        return suggestions.length > 0
+          ? { ok: true as const, suggestions }
+          : { ok: false as const, error: 'empty suggestion response' }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { ok: false as const, error: msg }
@@ -359,7 +363,11 @@ export function createTransport(
           const json = (await resp.json()) as
             | { ok: true; suggestions: string[] }
             | { ok: false; error: string }
-          return json.ok ? { ...json, streamed: false as const } : json
+          if (!json.ok) return json
+          const suggestions = normalizeSuggestionArray(json.suggestions)
+          return suggestions.length > 0
+            ? { ok: true as const, suggestions, streamed: false as const }
+            : { ok: false as const, error: 'empty suggestion response' }
         }
         if (!resp.body) {
           return { ok: false as const, error: 'no response body' }
@@ -374,7 +382,10 @@ export function createTransport(
           if (accumulated.length > 0) onDelta(accumulated)
         }
         accumulated += decoder.decode() // flush 殘餘 multi-byte
-        return { ok: true as const, suggestions: parseNumberedList(accumulated), streamed: true as const }
+        const suggestions = singleAnswerFromText(accumulated)
+        return suggestions.length > 0
+          ? { ok: true as const, suggestions, streamed: true as const }
+          : { ok: false as const, error: 'empty suggestion response' }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { ok: false as const, error: msg }

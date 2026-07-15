@@ -403,9 +403,9 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
         suggestHit = true
         const body = new ReadableStream<Uint8Array>({
           start(controller) {
-            controller.enqueue(encoder.encode('1. 先講'))
+            controller.enqueue(encoder.encode('先講結論。'))
             void gate.then(() => {
-              controller.enqueue(encoder.encode('結論。\n2. 帶關鍵數字。'))
+              controller.enqueue(encoder.encode('再帶關鍵數字。'))
               controller.close()
             })
           },
@@ -430,12 +430,12 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(suggestHit).toBe(true)
     await new Promise(r => setTimeout(r, 40))
     const liveEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
-    expect(liveEl.textContent).toContain('1. 先講') // 串流中：手機已有部分文字
+    expect(liveEl.textContent).toContain('先講結論。') // 串流中：手機已有部分文字
 
     // 放行第二個 chunk → 串流結束 → 條列 + 眼鏡渲染
     releaseChunk2()
     await new Promise(r => setTimeout(r, 380)) // > 300ms 節流窗，讓 trailing/flush 落定
-    expect(liveEl.textContent).toBe('1. 先講結論。\n2. 帶關鍵數字。')
+    expect(liveEl.textContent).toBe('1. 先講結論。再帶關鍵數字。')
     expect(fake.lastRender()).toMatch(/先講結論/)
     expect(fake.lastRender()).toMatch(/帶關鍵數字/)
   })

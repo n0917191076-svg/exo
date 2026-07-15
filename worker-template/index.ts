@@ -1,4 +1,4 @@
-import { buildSuggestPrompt } from './suggestion-policy'
+import { buildSuggestPrompt, singleAnswerFromText } from './suggestion-policy'
 
 // Cue personal Cloudflare Worker — proxies the glasses-to-Deepgram audio
 // stream + caches the rolling transcript so the LLM call can use it as
@@ -247,8 +247,7 @@ async function callAnthropic(
     },
     body: JSON.stringify({
       model,
-      // 長答案（3 條 ×40 繁中字 ≈ 240 tokens）在 200 會被截斷，放寬到 400
-      max_tokens: 400,
+      max_tokens: 1024,
       system: systemPrompt,
       messages: [
         {
@@ -266,7 +265,10 @@ async function callAnthropic(
   }
   const json = (await res.json()) as { content?: Array<{ text?: string }> }
   const text = json.content?.[0]?.text ?? ''
-  return jsonResponse(200, { ok: true, suggestions: parseNumberedList(text) })
+  const suggestions = singleAnswerFromText(text)
+  return suggestions.length > 0
+    ? jsonResponse(200, { ok: true, suggestions })
+    : jsonResponse(502, { ok: false, error: 'anthropic returned empty text' })
 }
 
 async function callOpenAI(
@@ -282,7 +284,7 @@ async function callOpenAI(
     },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      max_tokens: 200,
+      max_tokens: 1024,
       messages: [
         { role: 'system', content: systemPrompt },
         {
@@ -298,12 +300,15 @@ async function callOpenAI(
   }
   const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
   const text = json.choices?.[0]?.message?.content ?? ''
-  return jsonResponse(200, { ok: true, suggestions: parseNumberedList(text) })
+  const suggestions = singleAnswerFromText(text)
+  return suggestions.length > 0
+    ? jsonResponse(200, { ok: true, suggestions })
+    : jsonResponse(502, { ok: false, error: 'openai returned empty text' })
 }
 
 // Phase 3：串流版 — 向 Anthropic 開 stream:true，把 SSE 的 text_delta
-// 增量以純文字 chunked response 直接轉發。plugin 端累積後自行解析編號
-// 清單。Anthropic 非 200 時尚未開流，安全回 JSON 錯誤。
+// 增量以純文字 chunked response 直接轉發。plugin 端累積後保留為
+// 單一完整答案。Anthropic 非 200 時尚未開流，安全回 JSON 錯誤。
 async function callAnthropicStream(
   apiKey: string,
   systemPrompt: string,
@@ -320,7 +325,7 @@ async function callAnthropicStream(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 400,
+      max_tokens: 1024,
       stream: true,
       system: systemPrompt,
       messages: [
@@ -380,18 +385,6 @@ async function callAnthropicStream(
   return new Response(readable, {
     headers: { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() },
   })
-}
-
-// Parse "1. foo\n2. bar\n3. baz" into ["foo", "bar", "baz"]. Tolerates
-// LLM preamble / trailing text by only keeping numbered lines.
-function parseNumberedList(text: string): string[] {
-  const lines = text.split(/\r?\n/)
-  const out: string[] = []
-  for (const line of lines) {
-    const m = line.match(/^\s*\d+[.)]\s+(.+)$/)
-    if (m && m[1]) out.push(m[1].trim())
-  }
-  return out.length > 0 ? out : [text.trim()]
 }
 
 async function handleWebSocket(request: Request, env: Env): Promise<Response> {

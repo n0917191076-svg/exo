@@ -141,10 +141,14 @@ describe('createTransport against the real dev-worker', () => {
     expect(Array.isArray(captured!.utterances)).toBe(true)
   })
 
-  it('requestSuggestions returns a 3-tuple from the real /suggest', async () => {
+  it('requestSuggestions returns one joined answer from the real /suggest', async () => {
     const t = createTransport(baseUrl, 'dev')
     const r = await t.requestSuggestions({ mode: 'date', transcript: 'how was your day' })
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.suggestions).toHaveLength(3)
+    if (r.ok) {
+      expect(r.suggestions).toEqual([
+        '結論：我有八年產線管理經驗。\n我在 AI 投資競賽拿過第一名。\n我的強項是數據分析與風控。',
+      ])
+    }
   })
 })

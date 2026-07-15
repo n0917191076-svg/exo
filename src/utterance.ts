@@ -230,9 +230,9 @@ export function batteryHeaderSuffix(level: number | undefined): string {
 // ── Phase 3：串流顯示的純函式 ──────────────────────────────────────
 
 /**
- * 把「1. 甲\n2) 乙」解析成 ['甲','乙']。與 Worker 端 parseNumberedList
- * 同邏輯：只留編號行、容忍 LLM 前言雜訊；完全沒有編號行時整段當一條。
- * 串流結束後用來把累積全文切回建議陣列。
+ * 把「1. 甲\n2) 乙」解析成 ['甲','乙']。只留編號行、容忍 LLM
+ * 前言雜訊；完全沒有編號行時整段當一條。保留給舊測試與工具使用，
+ * production /suggest 路徑已改用 singleAnswerFromText。
  */
 export function parseNumberedList(text: string): string[] {
   if (text.trim().length === 0) return []
@@ -243,6 +243,21 @@ export function parseNumberedList(text: string): string[] {
     if (m && m[1]) out.push(m[1].trim())
   }
   return out.length > 0 ? out : [text.trim()]
+}
+
+export function singleAnswerFromText(text: string): string[] {
+  const answer = text.trim()
+  return answer ? [answer] : []
+}
+
+export function normalizeSuggestionArray(items: string[]): string[] {
+  return singleAnswerFromText(
+    items
+      .filter(item => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .join('\n'),
+  )
 }
 
 // ── 眼鏡渲染的位元組預算 ────────────────────────────────────────────

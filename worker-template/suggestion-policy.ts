@@ -95,3 +95,8 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
     systemPrompt: base + scene + kb + extend + COMMON_CONTRACT + lengthBlock + language + dedupe,
   }
 }
+
+export function singleAnswerFromText(text: string): string[] {
+  const answer = text.trim()
+  return answer ? [answer] : []
+}
