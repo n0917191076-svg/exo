@@ -331,9 +331,17 @@ describe('wrapAnswerLines', () => {
   })
 
   it('wraps English on a word boundary when possible', () => {
-    const lines = wrapAnswerLines('READ ONLY becomes TAKE ACTION through connected tools', 20)
+    const lines = wrapAnswerLines('READ ONLY becomes TAKE ACTION, through connected tools', 20)
     expect(lines.every(line => line.length <= 20)).toBe(true)
-    expect(lines.join(' ')).toBe('READ ONLY becomes TAKE ACTION through connected tools')
+    expect(lines.join(' ')).toBe('READ ONLY becomes TAKE ACTION, through connected tools')
+    expect(lines.some(line => line.includes('TAKE ACTION,'))).toBe(true)
+  })
+
+  it('does not group an uppercase word with a mixed-case following word', () => {
+    expect(wrapAnswerLines('one two three READ Agent follows', 20)).toEqual([
+      'one two three READ',
+      'Agent follows',
+    ])
   })
 
   it('preserves one blank separator between translation and English answer', () => {

@@ -173,7 +173,7 @@ export function wrapAnswerLines(text: string, width: number): string[] {
         const beforeBoundary = rest.slice(0, boundary).trimEnd()
         const previousBoundary = beforeBoundary.lastIndexOf(' ')
         const leftTerm = beforeBoundary.slice(previousBoundary + 1)
-        const rightTerm = /^[A-Z][A-Z0-9-]*/.exec(rest.slice(boundary + 1))?.[0]
+        const rightTerm = /^[A-Z][A-Z0-9-]*(?![A-Za-z0-9-])/.exec(rest.slice(boundary + 1))?.[0]
         if (
           previousBoundary > 0
           && /^[A-Z][A-Z0-9-]*$/.test(leftTerm)

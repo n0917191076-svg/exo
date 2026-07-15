@@ -825,6 +825,7 @@ async function runMockTick(): Promise<void> {
   const next = nextMockExchange(currentMode)
   lastTranscript = next.transcript
   suggestions = next.suggestions
+  liveSuggestionsEl.textContent = suggestions.join('\n')
   await paint()
 }
 
