@@ -48,15 +48,26 @@ describe('single-answer Worker prompt policy', () => {
   })
 
   it.each([
-    ['short', '80–120 個中文字', 120],
-    ['medium', '180–240 個中文字', 240],
-    ['long', '320–420 個中文字', 420],
-  ])('maps Chinese %s length with a mandatory hard ceiling', (length, range, maximum) => {
+    ['short', '80–120 個中文字', 120, 3, 40],
+    ['medium', '180–240 個中文字', 240, 4, 60],
+    ['long', '320–420 個中文字', 420, 7, 60],
+  ])('maps Chinese %s length to enforceable structure bounds', (length, range, maximum, sentenceLimit, sentenceMaximum) => {
     const prompt = buildSuggestPrompt({ mode: 'work', lang: 'zh', length }).systemPrompt
     expect(prompt).toContain(range)
     expect(prompt).toContain(`硬性上限為 ${maximum} 個字元，絕對不得超過`)
     expect(prompt).toMatch(/計數包含標點符號與英文術語/)
-    expect(prompt).toMatch(/刪除次要細節.*上限內.*完整/)
+    expect(prompt).toContain('只用一個段落，不得換行或加入空白行')
+    expect(prompt).toContain(`最多 ${sentenceLimit} 句，每句不得超過 ${sentenceMaximum} 個字元`)
+    expect(prompt).toContain('輸出前在內部自我檢查句數、每句字元數與全文字元數')
+    expect(prompt).toContain('若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節')
+    expect(prompt).toContain('不得輸出檢查過程')
+  })
+
+  it('caps distinct English terminology while retaining the useful target', () => {
+    const prompt = buildSuggestPrompt({ mode: 'work', lang: 'zh', length: 'medium' }).systemPrompt
+    expect(prompt).toContain('適合時，自然加入 2–4 個相關英文術語')
+    expect(prompt).toContain('最多只能使用 4 個不同的英文術語')
+    expect(prompt).toContain('其他概念優先使用中文')
   })
 
   it.each([
