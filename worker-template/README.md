@@ -1,73 +1,90 @@
-# Cue personal Cloudflare Worker
+# Exo personal Cloudflare Worker
 
-Deploy this once. Cue connects to it for real STT (Deepgram) and LLM
-suggestions (Claude Haiku via Anthropic, or 4o-mini via OpenAI). All
-keys live as Worker secrets — Cue never sees them.
+Exo 的 Plugin 只透過 HTTPS 與這個 Worker 溝通。Worker 保管 Deepgram 與 LLM 金鑰；API key 不會進入 Plugin、`app.json` 或瀏覽器儲存空間。
 
-## Prereqs
+## 前置需求
 
-- Cloudflare account (free) — https://dash.cloudflare.com
-- `wrangler` CLI: `npm install -g wrangler`
-- Deepgram API key — https://console.deepgram.com (free $200 credit)
-- Anthropic API key OR OpenAI API key for the LLM step
+- Cloudflare 帳號
+- Node.js 20 或 22
+- Deepgram API key
+- Anthropic API key（建議）或 OpenAI API key（非串流 fallback）
 
-## Deploy
+## 安裝與部署
 
 ```bash
 cd worker-template
 npm install
-wrangler login                               # one-time
+npx wrangler login
 
-# Random 32+ char string. Use this same value in Cue's phone settings as Bearer token.
-wrangler secret put SHARED_SECRET
+# 自訂一組至少 32 字元的 Bearer token；同一值填進 Exo 設定頁。
+npx wrangler secret put SHARED_SECRET
+npx wrangler secret put DEEPGRAM_API_KEY
+npx wrangler secret put ANTHROPIC_API_KEY
 
-wrangler secret put DEEPGRAM_API_KEY
-wrangler secret put ANTHROPIC_API_KEY        # OR set OPENAI_API_KEY instead
-
-wrangler deploy
+npx wrangler deploy
 ```
 
-Wrangler prints a URL like `https://cue-worker.<your-sub>.workers.dev`.
+如果只設定 OpenAI fallback，將第三個 secret 指令換成：
 
-## Wire it to Cue
+```bash
+npx wrangler secret put OPENAI_API_KEY
+```
 
-In the Cue phone-side settings (under "Worker"):
-1. Paste the Worker URL
-2. Paste the SHARED_SECRET as Bearer token
-3. Save
+`wrangler deploy` 會輸出 Worker URL，例如 `https://cue-worker.<account>.workers.dev`。把完整 HTTPS URL 與 `SHARED_SECRET` 分別填進 Exo 手機設定頁的 Worker URL 與 Bearer token。不要把 secret 寫入任何 repo 檔案。
 
-That's it. Open Cue on glasses, accept privacy, tap to start mic. The
-plugin will:
-1. Open a WebSocket to `<worker>/ws?token=<bearer>` and stream PCM frames
-2. Receive interim transcripts back as `{type:'transcript', text:'...', isFinal:bool}` JSON frames
-3. POST `<worker>/suggest` with `{mode, transcript, customPrompt?}` to get LLM suggestions
+## Exo 使用的正式 HTTP 流程
 
-If the Worker is unconfigured / unreachable, Cue falls back to the
-mock-mode suggestions from v0.1.0 so the app stays usable.
+所有 POST 都使用 `Authorization: Bearer <SHARED_SECRET>`。
 
-## Costs
+### POST `/transcribe?lang=zh|en&gated=1|0`
 
-- **Cloudflare Workers**: free tier (100k requests/day) covers any single user comfortably. WebSocket connections count as one request each.
-- **Deepgram**: ~$0.0043/min via the Nova-2 model. $200 free credit lasts a single user months.
-- **Anthropic Claude Haiku**: ~$0.001 per suggestion call. Heavy use ~$1-2/day.
-- **OpenAI 4o-mini**: ~$0.0008 per call. Slightly cheaper but slower than Haiku.
+- Request headers：`Authorization: Bearer <SHARED_SECRET>`、`Content-Type: application/octet-stream`。
+- Request body：16 kHz、mono、16-bit signed little-endian raw PCM。
+- `lang=zh` 會使用 Deepgram `language=zh-TW`；`lang=en` 使用 `language=en`。
+- `gated=1` 是預設閘門模式，不啟用語者分離；`gated=0` 才啟用 `diarize` 與 `utterances`。
+- Response：`{ "ok": true, "text": "...", "utterances": [...] }`。
 
-## Endpoints
+### POST `/suggest?stream=1`
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/ws?token=<bearer>` | query token | WebSocket for streaming PCM → transcripts |
-| POST | `/suggest` | `Authorization: Bearer <bearer>` | LLM suggestion request given a transcript |
-| GET | `/healthz` | none | Sanity check |
+- Request headers：`Authorization: Bearer <SHARED_SECRET>`、`Content-Type: application/json`。
+- Request body 是 JSON，必要欄位為 `transcript`；目前也接受 `mode`、`customPrompt`、`recentSuggestions`、`sceneNote`、`model`、`length`、`lang`、`kbPersonal`、`kbExtra` 與 `extendContext`。
+- Anthropic 路徑會回傳 `text/plain; charset=utf-8` 的 chunked 純文字流，Plugin 用 `response.body.getReader()` 增量讀取。
+- 這是 Exo 的預設建議路徑。
 
-## Audio format
+### POST `/suggest?stream=0`
 
-Cue sends raw 16kHz mono 16-bit signed PCM little-endian. The Deepgram
-URL the Worker opens hardcodes those parameters — change the
-`DEEPGRAM_WS` URL in `index.ts` if you need a different rate.
+- Request headers：`Authorization: Bearer <SHARED_SECRET>`、`Content-Type: application/json`。
+- 使用與串流路徑相同的 JSON request body。
+- Response：`{ "ok": true, "suggestions": ["..."] }`。
+- 供 fallback、診斷與 WebKit smoke test 使用。
 
-## Limitations
+### GET `/healthz`
 
-- **iOS WKWebView** has no native WebSocket-binary-frames support in some plugin contexts. If audio doesn't reach the Worker, check the plugin console for "WebSocket failed" and verify the WS endpoint is reachable.
-- **Deepgram free tier**: rate-limited at ~5 concurrent streams per account. Single user fine; not suited for many simultaneous users on one Worker.
-- **No persistence**: transcripts live only in the open WebSocket connection. Once the user pauses the mic, the transcript is gone. Intentional for privacy.
+- 不需驗證。
+- Response：`{ "ok": true }`。
+
+### Legacy `/ws`
+
+Worker 暫時保留 `/ws?token=<SHARED_SECRET>` 作為舊版相容／診斷端點。Exo 的 Even App Plugin 不使用它；WKWebView 正式流程一律走上述 chunked HTTP 端點。
+
+## 本機驗證
+
+不需要真實 API key 的離線 Worker 測試：
+
+```bash
+cd ..
+npm run test:worker
+```
+
+已部署 Worker 的 WebKit smoke test 需要 Bearer token。請用環境變數或權限為 `600` 的 `/tmp/exo-shared-secret.txt` 傳入，測完立即刪除；不要把 secret 貼進聊天、shell history 或 commit。
+
+```bash
+npm run test:webkit
+```
+
+## 隱私與限制
+
+- Worker 不持久化逐字稿；每段音訊只為當次轉錄送往 Deepgram。
+- Plugin 端不可改用 WebSocket；Even App 的 WKWebView 路徑使用 HTTP。
+- `/transcribe` 目前只接受 raw PCM。Phase 6 WebAdapter 若改送 WebM，必須先擴充 Worker 並補測試。
+- 真實收音、BLE 穩定性與眼鏡顯示仍須用 G2 實機驗證。

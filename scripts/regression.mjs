@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// End-to-end regression test for Cue via the Even Hub simulator HTTP API.
+// End-to-end regression test for Exo via the Even Hub simulator HTTP API.
 // Verifies the UX flow only — privacy gate, gated capture toggle, answer
 // persistence (Phase 4), mock suggestion ticks. Real audio capture / STT / LLM cannot be exercised in
 // the simulator (no audio input injection); that path is tested via the
@@ -7,8 +7,8 @@
 // real glasses with a deployed Worker.
 //
 // Prereqs (run manually first):
-//   1. cd ~/Documents/Cue && npm run dev          # Vite on :5176
-//   2. npx evenhub-simulator --automation-port 9897 http://localhost:5176
+//   1. cd ~/projects/exo && npm run dev -- --port 5173
+//   2. npx evenhub-simulator http://localhost:5173 --automation-port 9897
 //
 // Then: npm run test:e2e
 
@@ -91,7 +91,7 @@ function check(label, condition, detail = '') {
 }
 
 async function main() {
-  console.log('Cue regression test')
+  console.log('Exo regression test')
   console.log(`  simulator: ${SIM_BASE}`)
   console.log()
 
