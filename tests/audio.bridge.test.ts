@@ -553,9 +553,9 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(fake.lastRender()).not.toMatch(/這句要被丟掉/)
   })
 
-  it('回答視圖尾端滾動窗：超長答案只留最新內容，總量 ≤512 bytes', async () => {
-    // 單一中文長文 — 全文遠超 512 bytes，眼鏡端必須裁頭留尾
-    const longAnswer = `${'這是一段有內容的專業分析。'.repeat(30)}唯一尾端標記`
+  it('回答視圖開頭定錨窗：超長答案留開頭、尾端補 ▼，總量 ≤512 bytes', async () => {
+    // 提詞機語意：全文遠超 512 bytes 時，眼鏡端裁尾留頭（由朗讀節奏推進，非跟生成捲尾）
+    const longAnswer = `唯一開頭標記${'這是一段有內容的專業分析。'.repeat(30)}真正的尾端`
     globalThis.fetch = vi.fn(async (url: string) => {
       const u = String(url)
       if (u.includes('/healthz')) return new Response('ok', { status: 200 })
@@ -586,7 +586,9 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
 
     const rendered = fake.lastRender()
     expect(new TextEncoder().encode(rendered).length).toBeLessThanOrEqual(512)
-    expect(rendered).toContain('唯一尾端標記')
+    expect(rendered).toContain('唯一開頭標記') // 定錨開頭可見
+    expect(rendered).not.toContain('真正的尾端') // 尾端被裁掉
+    expect(rendered).toContain('▼') // 提示下方還有內容
     expect(rendered).not.toMatch(/1\.[■●★]/)
   })
 

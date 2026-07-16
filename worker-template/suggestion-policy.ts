@@ -37,16 +37,16 @@ const COMMON_CONTRACT = `
 
 const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
   short: {
-    zh: '單一答案全文以 80–120 個中文字為目標。硬性上限為 120 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 3 句，每句不得超過 40 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
-    en: 'The single English answer should target 30–45 words, excluding the translation line. The hard maximum is 45 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
+    zh: '單一答案全文以 40–70 個中文字為目標。硬性上限為 70 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 2 句，每句不得超過 40 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
+    en: 'The single English answer should target 20–30 words, excluding the translation line. The hard maximum is 30 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
   },
   medium: {
-    zh: '單一答案全文以 180–240 個中文字為目標。硬性上限為 240 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 4 句，每句不得超過 60 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
-    en: 'The single English answer should target 70–100 words, excluding the translation line. The hard maximum is 100 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
+    zh: '單一答案全文以 80–110 個中文字為目標。硬性上限為 110 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 3 句，每句不得超過 45 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
+    en: 'The single English answer should target 35–50 words, excluding the translation line. The hard maximum is 50 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
   },
   long: {
-    zh: '單一答案全文以 320–420 個中文字為目標。硬性上限為 420 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 7 句，每句不得超過 60 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
-    en: 'The single English answer should target 130–170 words, excluding the translation line. The hard maximum is 170 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
+    zh: '單一答案全文以 110–140 個中文字為目標。硬性上限為 140 個字元，絕對不得超過；計數包含標點符號與英文術語。只用一個段落，不得換行或加入空白行。最多 4 句，每句不得超過 45 個字元。輸出前在內部自我檢查句數、每句字元數與全文字元數；若任何一句或全文可能超過上限，刪除次要例子、重複內容或次要細節，並在上限內保持答案完整。不得輸出檢查過程；完整性與事實正確性優先於達到目標下限。',
+    en: 'The single English answer should target 50–70 words, excluding the translation line. The hard maximum is 70 words, excluding the translation line, and must never be exceeded. Delete secondary details to keep the answer complete within that maximum. Completeness and factual accuracy take priority over reaching the lower target.',
   },
 }
 

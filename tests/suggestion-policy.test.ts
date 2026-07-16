@@ -38,7 +38,7 @@ describe('single-answer Worker prompt policy', () => {
       '【個人資訊】',
       '【補充資料】',
       '【回答契約】',
-      '70–100 words',
+      '35–50 words',
       '譯：',
       '【最近回答】',
     ]
@@ -48,9 +48,9 @@ describe('single-answer Worker prompt policy', () => {
   })
 
   it.each([
-    ['short', '80–120 個中文字', 120, 3, 40],
-    ['medium', '180–240 個中文字', 240, 4, 60],
-    ['long', '320–420 個中文字', 420, 7, 60],
+    ['short', '40–70 個中文字', 70, 2, 40],
+    ['medium', '80–110 個中文字', 110, 3, 45],
+    ['long', '110–140 個中文字', 140, 4, 45],
   ])('maps Chinese %s length to enforceable structure bounds', (length, range, maximum, sentenceLimit, sentenceMaximum) => {
     const prompt = buildSuggestPrompt({ mode: 'work', lang: 'zh', length }).systemPrompt
     expect(prompt).toContain(range)
@@ -71,9 +71,9 @@ describe('single-answer Worker prompt policy', () => {
   })
 
   it.each([
-    ['short', '30–45 words', 45],
-    ['medium', '70–100 words', 100],
-    ['long', '130–170 words', 170],
+    ['short', '20–30 words', 30],
+    ['medium', '35–50 words', 50],
+    ['long', '50–70 words', 70],
   ])('maps English %s length with a mandatory hard ceiling', (length, range, maximum) => {
     const prompt = buildSuggestPrompt({ mode: 'work', lang: 'en', length }).systemPrompt
     expect(prompt).toContain(range)

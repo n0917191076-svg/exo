@@ -348,6 +348,42 @@ export function fitTailByBytes(lines: string[], maxBytes: number): string[] {
   return out
 }
 
+/**
+ * 開頭定錨窗（提詞機語意）：從第一行往下裝，總 UTF-8 位元組（含換行）不超過
+ * maxBytes；有裁切時末行補「▼」提示下方還有內容。與 fitTailByBytes 對稱，
+ * 差別是定錨在開頭——串流時畫面自動 hold 在第一頁，不跟著生成往尾端捲。
+ * 單行就超預算時截該行尾部保留頭部。
+ */
+export function fitHeadByBytes(lines: string[], maxBytes: number): string[] {
+  if (lines.length === 0 || maxBytes <= 0) return []
+  const size = (t: string) => UTF8.encode(t).length
+  const total = size(lines.join('\n'))
+  if (total <= maxBytes) return lines.slice()
+
+  const ELLIPSIS = '▼' // 認證字元；語意：下方還有內容。3 bytes
+  const out: string[] = []
+  let used = size(ELLIPSIS) // 預留裁切提示行
+  for (let i = 0; i < lines.length; i += 1) {
+    const cost = size(lines[i]!) + 1 // +1 換行
+    if (used + cost > maxBytes) break
+    out.push(lines[i]!)
+    used += cost
+  }
+  if (out.length === 0) {
+    // 第一行自己就超預算 — 從行頭往後裝字元
+    const first = lines[0]!
+    let acc = ''
+    for (let i = 0; i < first.length; i += 1) {
+      const candidate = acc + first[i]!
+      if (size(candidate + ELLIPSIS) > maxBytes) break
+      acc = candidate
+    }
+    return acc.length > 0 ? [acc + ELLIPSIS] : []
+  }
+  out.push(ELLIPSIS)
+  return out
+}
+
 // ── Phase 4：中文問句偵測（自動收音模式的觸發條件） ─────────────────
 
 // 疑問詞（多字詞，誤判率低）。單字「幾/哪」另外處理。

@@ -70,7 +70,7 @@ import {
   batteryHeaderSuffix,
   GLASSES_CONTENT_MAX_BYTES,
   createRenderThrottle,
-  fitTailByBytes,
+  fitHeadByBytes,
   isQuestionZh,
   pruneTurns,
   shouldRequestSuggestion,
@@ -723,7 +723,8 @@ function renderGlasses(): string {
         [...fixedTop, ...fixedBottom].join('\n'),
       ).length + 1 // +1：answer 區與上下區之間的換行
       const budget = GLASSES_CONTENT_MAX_BYTES - fixedBytes
-      const answerLines = fitTailByBytes(
+      // 提詞機：定錨開頭、由朗讀節奏推進，串流時自動 hold 第一頁（不跟生成往尾端捲）
+      const answerLines = fitHeadByBytes(
         wrapAnswerLines(currentAnswerText(), LINE_WIDTH),
         budget,
       )
@@ -783,7 +784,7 @@ function renderGlasses(): string {
   if (suggestions.length > 0) {
     const reserved = new TextEncoder().encode([...lines, '', footer].join('\n')).length + 1
     const budget = Math.max(0, GLASSES_CONTENT_MAX_BYTES - reserved)
-    lines.push(...fitTailByBytes(
+    lines.push(...fitHeadByBytes(
       wrapAnswerLines(currentAnswerText(), LINE_WIDTH),
       budget,
     ))

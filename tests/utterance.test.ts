@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_TRIGGER,
   GLASSES_CONTENT_MAX_BYTES,
+  fitHeadByBytes,
   fitTailByBytes,
   batteryHeaderSuffix,
   createRenderThrottle,
@@ -393,6 +394,46 @@ describe('fitTailByBytes', () => {
   it('空陣列與 0 預算不炸', () => {
     expect(fitTailByBytes([], 100)).toEqual([])
     expect(fitTailByBytes(['x'], 0)).toEqual([])
+  })
+})
+
+describe('fitHeadByBytes（提詞機開頭定錨窗）', () => {
+  const bytes = (t: string) => new TextEncoder().encode(t).length
+
+  it('總量在預算內時原樣返回', () => {
+    const lines = ['甲', '乙', '丙']
+    expect(fitHeadByBytes(lines, 100)).toEqual(lines)
+  })
+
+  it('超過預算時保留開頭行、末尾補「▼」（下方還有內容）', () => {
+    const lines = ['new-new-new-new', 'mid-mid-mid-mid', 'old-old-old-old']
+    const out = fitHeadByBytes(lines, 36) // 塞不下三行
+    expect(out[0]).toBe('new-new-new-new')
+    expect(out[out.length - 1]).toBe('▼')
+    expect(out).not.toContain('old-old-old-old')
+    expect(bytes(out.join('\n'))).toBeLessThanOrEqual(36)
+  })
+
+  it('串流成長時開頭窗穩定不變（不 racing）', () => {
+    const width = 40
+    const partial = ['第一頁開頭內容', '第一頁第二行內容']
+    const grown = [...partial, '後來才生成的第三行', '第四行']
+    // 兩者的開頭窗（budget 只夠前兩行）應相同 → 畫面 hold，不被生成推走
+    expect(fitHeadByBytes(partial, width)).toEqual(fitHeadByBytes(grown, width))
+  })
+
+  it('單行就超過預算時截該行尾部保留頭部', () => {
+    const long = '開頭' + '甲'.repeat(100)
+    const out = fitHeadByBytes([long], 30)
+    expect(out).toHaveLength(1)
+    expect(out[0]!.startsWith('開頭')).toBe(true)
+    expect(out[0]!.endsWith('▼')).toBe(true)
+    expect(bytes(out[0]!)).toBeLessThanOrEqual(30)
+  })
+
+  it('空陣列與 0 預算不炸', () => {
+    expect(fitHeadByBytes([], 100)).toEqual([])
+    expect(fitHeadByBytes(['x'], 0)).toEqual([])
   })
 
   it('GLASSES_CONTENT_MAX_BYTES 為 512（官方 textContainerUpgrade 上限）', () => {
