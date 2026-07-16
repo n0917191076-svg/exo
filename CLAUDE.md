@@ -129,7 +129,7 @@
 **驗收**：測試全綠 + mock 模式在瀏覽器可操作。
 
 ### Phase 1 — 中文化與核心設定
-1. **Deepgram 中文**：`worker-template/index.ts` 的 Deepgram URL 加 `language=zh-TW`。/suggest 與 /transcribe 的語言參數改為由請求 body 帶入（`lang: 'zh' | 'en'`），zh → `language=zh-TW`，en → 先查 Deepgram 官方文件確認 nova 系列目前對 multi/en 的建議參數再實作，不要憑記憶猜。
+1. **Deepgram 中文**：`worker-template/index.ts` 的 Deepgram URL 加 `language=zh-TW`。/suggest 與 /transcribe 的語言參數改為由請求 body 帶入（`lang: 'zh' | 'en'`），zh → `language=zh-TW`，en → 先查 Deepgram 官方文件確認 nova 系列目前對 multi/en 的建議參數再實作，不要憑記憶猜。**Deepgram model 用 `nova-3`**（2026-03 起支援 zh-TW；`language=multi` 不含中文，故英文模式用 `language=en`）；實機中文品質不佳時退 `nova-2`（同樣支援 zh-TW）。diarization 與 nova-3 的相容性見 `worker-template/index.ts` 註解。
 2. **重寫 `modes.ts`**：刪除 date/sting/sales/listen，保留結構。新模式：
    - `work`（工作）glyph `■`：目標是顯得專業。回答精準、有結構、可含關鍵數字。
    - `daily`（日常）glyph `●`：依 Evan 個人背景自然回答，口語、放鬆。
