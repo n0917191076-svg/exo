@@ -65,6 +65,7 @@ import {
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type DialogTurn, type TranscriptEvent } from './transport'
 import { downscaleFromBase64, downscaleImage, type DownscaledImage } from './imaging'
+import { parseGuideSteps, type GuidePlan } from './utterance'
 import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
 import { Vad } from './vad'
 import {
@@ -183,6 +184,7 @@ let kbAttach: Record<ModeId, KbAttach> = {
   daily: { personal: true, extra: false },
   custom: { personal: false, extra: false },
   solve: { personal: true, extra: true },
+  guide: { personal: false, extra: true },
 }
 
 // v0.4.0 transcript display: per-speaker rolling buffer. Pure helpers
@@ -281,6 +283,20 @@ root.innerHTML = `
       <img id="vision-preview" alt="預覽" style="display: none; margin-top: .5rem; max-width: 240px; max-height: 240px; border-radius: 4px; border: 1px solid #ccc;" />
     </section>
 
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">步驟教學（guide）</h2>
+      <p style="color: #7b7b7b; font-size: .85em; margin: 0 0 .5rem 0;">說「我要做 X」，AI 生成分步教學，一次顯示一步（手機／眼鏡）。</p>
+      <div style="display: flex; gap: .5rem; max-width: 520px;">
+        <input id="guide-input" type="text" placeholder="我要做…（例：換機車電瓶），Enter 產生" style="flex: 1; padding: .45rem; border-radius: 4px; border: 1px solid #bbb;" />
+        <button id="guide-gen" type="button" style="padding: .45rem .9rem; cursor: pointer;">產生</button>
+      </div>
+      <div style="display: flex; gap: .5rem; align-items: center; margin-top: .5rem;">
+        <button id="guide-prev" type="button" disabled style="padding: .35rem .8rem; cursor: pointer;">◀ 上一步</button>
+        <span id="guide-progress" style="color: #7b7b7b; font-size: .9em;">—</span>
+        <button id="guide-next" type="button" disabled style="padding: .35rem .8rem; cursor: pointer;">下一步 ▶</button>
+      </div>
+    </section>
+
     <div id="privacy-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 100;">
       <div style="background: #fff; max-width: 520px; padding: 1.5rem; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.3);">
         <h2 style="margin: 0 0 .5rem 0;">Before you start</h2>
@@ -374,6 +390,9 @@ root.innerHTML = `
           <div>直答</div>
           <label><input id="kb-attach-solve-personal" type="checkbox" /></label>
           <label><input id="kb-attach-solve-extra" type="checkbox" /></label>
+          <div>教學</div>
+          <label><input id="kb-attach-guide-personal" type="checkbox" /></label>
+          <label><input id="kb-attach-guide-extra" type="checkbox" /></label>
         </div>
         <button id="save-kb" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存知識庫</button>
         <p id="kb-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
@@ -660,7 +679,7 @@ kbPersonalInput.addEventListener('input', renderKbCounts)
 kbExtraInput.addEventListener('input', renderKbCounts)
 
 function renderKbAttach(): void {
-  for (const mode of ['work', 'daily', 'custom', 'solve'] as ModeId[]) {
+  for (const mode of ['work', 'daily', 'custom', 'solve', 'guide'] as ModeId[]) {
     kbCheckbox(mode, 'personal').checked = kbAttach[mode].personal
     kbCheckbox(mode, 'extra').checked = kbAttach[mode].extra
   }
@@ -675,7 +694,7 @@ saveKbBtn.addEventListener('click', async () => {
   kbPersonalInput.value = kbPersonal
   kbExtraInput.value = kbExtra
   renderKbCounts()
-  for (const mode of ['work', 'daily', 'custom', 'solve'] as ModeId[]) {
+  for (const mode of ['work', 'daily', 'custom', 'solve', 'guide'] as ModeId[]) {
     kbAttach[mode] = {
       personal: kbCheckbox(mode, 'personal').checked,
       extra: kbCheckbox(mode, 'extra').checked,
@@ -1440,6 +1459,79 @@ async function runVisionQuery(): Promise<void> {
     suggestionInFlight = false
   }
 }
+
+// Phase 8：步驟教學 — 生成「總覽＋步驟」清單，一次顯示一步（手機＋眼鏡）。
+let guidePlan: GuidePlan | null = null
+let guideIdx = 0
+
+function renderGuideStep(): void {
+  const prevBtn = document.querySelector<HTMLButtonElement>('#guide-prev')!
+  const nextBtn = document.querySelector<HTMLButtonElement>('#guide-next')!
+  const prog = document.querySelector<HTMLSpanElement>('#guide-progress')!
+  if (!guidePlan || guidePlan.steps.length === 0) {
+    prevBtn.disabled = true
+    nextBtn.disabled = true
+    prog.textContent = '—'
+    return
+  }
+  const n = guidePlan.steps.length
+  guideIdx = Math.max(0, Math.min(n - 1, guideIdx))
+  const stepText = `步驟 ${guideIdx + 1}/${n}：${guidePlan.steps[guideIdx]}`
+  const shown = guideIdx === 0 && guidePlan.overview
+    ? `總覽：${guidePlan.overview}\n${stepText}`
+    : stepText
+  suggestions = [shown]
+  extendedText = ''
+  liveSuggestionsEl.textContent = shown
+  prog.textContent = `${guideIdx + 1} / ${n}`
+  prevBtn.disabled = guideIdx === 0
+  nextBtn.disabled = guideIdx === n - 1
+  void paint()
+}
+
+async function runGuide(topic: string): Promise<void> {
+  const t = topic.trim()
+  if (!t) return
+  if (!transport || !isRealMode) {
+    liveSuggestionsEl.textContent = '（步驟教學需先在下方設定 Worker URL 與 token）'
+    return
+  }
+  if (suggestionInFlight || extendInFlight) return
+  suggestionInFlight = true
+  try {
+    liveSuggestionsEl.textContent = '（生成教學中…）'
+    const result = await transport.requestSuggestions({
+      mode: 'guide',
+      transcript: t,
+      model: modelChoice,
+      length: answerLength,
+      lang: langMode,
+      kbPersonal: kbAttach.guide.personal && kbPersonal ? kbPersonal : undefined,
+      kbExtra: kbAttach.guide.extra && kbExtra ? kbExtra : undefined,
+    })
+    if (result.ok) {
+      guidePlan = parseGuideSteps(result.suggestions.join('\n'))
+      guideIdx = 0
+      if (guidePlan.steps.length === 0) {
+        liveSuggestionsEl.textContent = result.suggestions.join('\n') // 解析不出步驟就原樣顯示
+      } else {
+        renderGuideStep()
+      }
+    } else {
+      liveSuggestionsEl.textContent = `(教學生成失敗：${result.error.slice(0, 60)})`
+    }
+  } finally {
+    suggestionInFlight = false
+  }
+}
+
+const guideInput = document.querySelector<HTMLInputElement>('#guide-input')!
+document.querySelector<HTMLButtonElement>('#guide-gen')!.addEventListener('click', () => { void runGuide(guideInput.value) })
+guideInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); void runGuide(guideInput.value) }
+})
+document.querySelector<HTMLButtonElement>('#guide-prev')!.addEventListener('click', () => { guideIdx -= 1; renderGuideStep() })
+document.querySelector<HTMLButtonElement>('#guide-next')!.addEventListener('click', () => { guideIdx += 1; renderGuideStep() })
 
 // Phase 4：手勢 → 語意事件走 gestureMapFor 純函式（模式作用域的單一
 // 事實來源），main.ts 只剩一個 dispatcher。模式切換只在手機 radio。

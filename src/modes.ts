@@ -4,7 +4,7 @@
 // 模式同時出現在眼鏡（單擊循環）與手機設定頁（radio）。custom 模式
 // 由使用者在手機端自填 prompt（沿用 Cue 原設計）。
 
-export type ModeId = 'work' | 'daily' | 'custom' | 'solve'
+export type ModeId = 'work' | 'daily' | 'custom' | 'solve' | 'guide'
 
 export interface Mode {
   id: ModeId
@@ -71,6 +71,18 @@ export const MODES: Mode[] = [
       '你是使用者的即時解題助手。逐字稿是使用者本人剛說出的問題，請直接把答案講出來、讓使用者能照著念；' +
       '不是建議怎麼回話。答案先行：第一行就是答案或結論，之後最多 2–3 行關鍵步驟或理由。' +
       '除非逐字稿、場景或知識庫明確提供，不得虛構經歷、成果或具體數字。',
+    proactiveSupported: false,
+  },
+  {
+    id: 'guide',
+    label: '教學',
+    glyph: '▶',
+    description: '說「我要做 X」，AI 生成分步教學，一次一步照著做。',
+    // guide 輸出是「總覽＋編號步驟」清單（非單一答案）；Worker 端有自己的
+    // 步驟契約，plugin 解析成步驟陣列一次顯示一步。
+    systemPrompt:
+      '你是使用者的即時步驟教學助手。使用者說想做的事，請產生「總覽：共 N 步」＋逐行編號步驟，' +
+      '每步開頭「步驟 K：」、只做一個動作、簡短到眼鏡一頁放得下。不得虛構不存在的步驟或數據。',
     proactiveSupported: false,
   },
 ]

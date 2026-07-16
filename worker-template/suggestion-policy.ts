@@ -18,7 +18,7 @@ export interface SuggestPromptInput {
   history?: DialogTurn[] // 最近幾輪對話，讓追問接得上（全模式共用）
 }
 
-const BASE_PROMPTS: Record<'work' | 'daily' | 'custom' | 'solve', string> = {
+const BASE_PROMPTS: Record<'work' | 'daily' | 'custom' | 'solve' | 'guide', string> = {
   work:
     '你是使用者的即時對話助手。逐字稿是對方剛說的話，請替使用者形成下一段可直接說出口的回答。' +
     '情境是工作場合（面試、會議、簡報）：講話口語、像正常人在對話，不要書面語或一般人平常不會用的生硬字詞；' +
@@ -32,7 +32,18 @@ const BASE_PROMPTS: Record<'work' | 'daily' | 'custom' | 'solve', string> = {
     '你是使用者的即時對話助手。逐字稿是對方剛說的話，請形成一段可直接說出口、內容完整的回答。',
   solve:
     '你是使用者的即時解題助手。逐字稿是使用者本人剛說出的問題，請直接把答案講出來、讓使用者能照著念；不是建議怎麼回話。',
+  guide:
+    '你是使用者的即時步驟教學助手。逐字稿是使用者說「想做的事」，請產生清楚、可照做的分步教學。',
 }
+
+// guide（步驟教學）契約：總覽先行＋編號步驟，每步簡短到眼鏡一頁放得下。
+const GUIDE_CONTRACT = `
+
+【回答契約】
+第一行輸出「總覽：共 N 步」，可在同一行後面補一句所需材料或前置條件。
+接著逐行輸出編號步驟，每行開頭「步驟 K：」，每步只做一個動作、簡短（每步 ≤2 行、≤60 字），眼鏡一頁要放得下。
+只輸出總覽與步驟，不要前言、不要結語、不要在步驟之外多寫東西。
+可以使用通用專業知識；假設或替代做法用「例如」標示。不得虛構不存在的步驟、規格或數據。`
 
 // solve（直答）專用契約：答案先行、可多行，語意與對話模式相反。
 const SOLVE_CONTRACT = `
@@ -91,8 +102,8 @@ function tailTruncate(value: string, max: number): string {
   return value.length > max ? value.slice(value.length - max) : value
 }
 
-function normalizedMode(mode?: string): 'work' | 'daily' | 'custom' | 'solve' {
-  if (mode === 'daily' || mode === 'custom' || mode === 'solve') return mode
+function normalizedMode(mode?: string): 'work' | 'daily' | 'custom' | 'solve' | 'guide' {
+  if (mode === 'daily' || mode === 'custom' || mode === 'solve' || mode === 'guide') return mode
   return 'work'
 }
 
@@ -130,11 +141,13 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
         : `對方：${h.them.trim()}\n你的回應：${h.me.trim()}`).join('\n') +
       '\n（以上是稍早的脈絡，供你理解追問；只需針對最新這句回應，不要重述舊內容。）'
     : ''
-  const contract = isSolve ? SOLVE_CONTRACT : COMMON_CONTRACT
-  const lengthRule = (isSolve ? SOLVE_LENGTH_RULES : LENGTH_RULES)[input.length ?? 'medium']
-    ?? (isSolve ? SOLVE_LENGTH_RULES.medium! : LENGTH_RULES.medium!)
-  const lengthBlock = `\n\n【長度】${lang === 'en' ? lengthRule.en : lengthRule.zh}`
-  const language = lang === 'en'
+  const isGuide = mode === 'guide'
+  const contract = isGuide ? GUIDE_CONTRACT : isSolve ? SOLVE_CONTRACT : COMMON_CONTRACT
+  // guide 由契約控制每步長度，不套單一答案字數上限
+  const lengthRules = isSolve ? SOLVE_LENGTH_RULES : LENGTH_RULES
+  const lengthRule = lengthRules[input.length ?? 'medium'] ?? lengthRules.medium!
+  const lengthBlock = isGuide ? '' : `\n\n【長度】${lang === 'en' ? lengthRule.en : lengthRule.zh}`
+  const language = (lang === 'en' && !isGuide)
     ? (isSolve
         ? '\n\n【英文格式】用英文作答，CEFR B1 以內；第一行就是答案。'
         : '\n\n【英文格式】第一行必須是「譯：<對方那句話的中文翻譯>」。空一行後，只輸出一個完整英文回答；使用 CEFR B1 以內詞彙與句型。')

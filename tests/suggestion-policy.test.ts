@@ -144,6 +144,18 @@ describe('對話記憶（history，全模式）', () => {
   })
 })
 
+describe('guide（步驟教學）prompt policy', () => {
+  it('總覽先行＋編號步驟、每步簡短、不套單一答案字數上限', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'guide', lang: 'zh', length: 'medium' })
+    expect(systemPrompt).toMatch(/步驟教學/)
+    expect(systemPrompt).toMatch(/總覽：共 N 步/)
+    expect(systemPrompt).toMatch(/步驟 K：/)
+    expect(systemPrompt).not.toContain('只輸出一個完整答案') // 非單一答案契約
+    expect(systemPrompt).not.toContain('硬性上限') // guide 不套字數上限
+    expect(systemPrompt).toMatch(/不得虛構/) // 事實政策沿用
+  })
+})
+
 describe('Worker single-answer normalization', () => {
   it('keeps all model text as one answer even if it contains numbered lines', () => {
     expect(singleAnswerFromText('1. 第一段\n2. 第二段')).toEqual(['1. 第一段\n2. 第二段'])

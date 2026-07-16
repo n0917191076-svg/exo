@@ -2,15 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_MODE, MODES, modeById, nextMode } from '../src/modes'
 
 describe('mode registry', () => {
-  it('四個模式：work / daily / custom / solve', () => {
-    expect(MODES.map(m => m.id)).toEqual(['work', 'daily', 'custom', 'solve'])
+  it('五個模式：work / daily / custom / solve / guide', () => {
+    expect(MODES.map(m => m.id)).toEqual(['work', 'daily', 'custom', 'solve', 'guide'])
   })
 
-  it('glyph 符合規格（官方認證字元集）：work ■、daily ●、custom ★、solve ☆', () => {
+  it('glyph 符合規格（官方認證字元集）：work ■、daily ●、custom ★、solve ☆、guide ▶', () => {
     expect(modeById('work').glyph).toBe('■')
     expect(modeById('daily').glyph).toBe('●')
     expect(modeById('custom').glyph).toBe('★')
     expect(modeById('solve').glyph).toBe('☆')
+    expect(modeById('guide').glyph).toBe('▶')
   })
 
   it('所有 glyph 都在官方認證 Unicode 集內（LVGL 字型保證有）', () => {

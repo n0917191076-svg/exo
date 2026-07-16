@@ -288,6 +288,26 @@ export function parseNumberedList(text: string): string[] {
   return out.length > 0 ? out : [text.trim()]
 }
 
+// Phase 8：把 guide 回的「總覽＋編號步驟」文字解析成結構。續行併入上一步。
+export interface GuidePlan {
+  overview: string
+  steps: string[]
+}
+
+export function parseGuideSteps(text: string): GuidePlan {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
+  let overview = ''
+  const steps: string[] = []
+  for (const line of lines) {
+    const ov = line.match(/^總覽[:：]\s*(.*)$/)
+    if (ov) { overview = (ov[1] ?? '').trim(); continue }
+    const st = line.match(/^(?:步驟\s*\d+[:：]|\d+[.)、]\s*)(.+)$/)
+    if (st && st[1]) steps.push(st[1].trim())
+    else if (steps.length > 0) steps[steps.length - 1] += ` ${line}`
+  }
+  return { overview, steps }
+}
+
 export function singleAnswerFromText(text: string): string[] {
   const answer = text.trim()
   return answer ? [answer] : []

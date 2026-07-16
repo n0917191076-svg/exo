@@ -6,6 +6,7 @@ import {
   GLASSES_CONTENT_MAX_BYTES,
   fitHeadByBytes,
   fitTailByBytes,
+  parseGuideSteps,
   batteryHeaderSuffix,
   createRenderThrottle,
   endsOnSentenceFinalPunct,
@@ -355,6 +356,20 @@ describe('wrapAnswerLines', () => {
 })
 
 // ─── textContainerUpgrade 512-byte 上限的尾端滾動窗 ─────────────────
+
+describe('parseGuideSteps（步驟教學解析）', () => {
+  it('解析總覽＋編號步驟（步驟 K： 與 1. 皆可）', () => {
+    const text = '總覽：共 3 步，需要螺絲起子\n步驟 1：拆下背蓋\n步驟 2：取出電池\n步驟 3：裝上新電池'
+    const plan = parseGuideSteps(text)
+    expect(plan.overview).toBe('共 3 步，需要螺絲起子')
+    expect(plan.steps).toEqual(['拆下背蓋', '取出電池', '裝上新電池'])
+  })
+  it('續行併入上一步；無總覽時 overview 為空', () => {
+    const plan = parseGuideSteps('1. 打開設定\n往下滑到底\n2. 點關於本機')
+    expect(plan.overview).toBe('')
+    expect(plan.steps).toEqual(['打開設定 往下滑到底', '點關於本機'])
+  })
+})
 
 describe('fitTailByBytes', () => {
   const bytes = (t: string) => new TextEncoder().encode(t).length
