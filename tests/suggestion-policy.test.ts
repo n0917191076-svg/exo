@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSuggestPrompt, singleAnswerFromText } from '../worker-template/suggestion-policy'
+import { buildSuggestPrompt, buildUserMessage, singleAnswerFromText } from '../worker-template/suggestion-policy'
 
 describe('single-answer Worker prompt policy', () => {
   it.each(['work', 'daily', 'custom'])('%s enforces one unnumbered answer', mode => {
@@ -110,6 +110,11 @@ describe('solve（直答）prompt policy', () => {
     const { systemPrompt } = buildSuggestPrompt({ mode: 'solve', lang: 'en', length: 'short' })
     expect(systemPrompt).toMatch(/用英文作答/)
     expect(systemPrompt).not.toMatch(/譯：/)
+  })
+  it('buildUserMessage：solve＝問題→答案；對話模式＝逐字稿→建議', () => {
+    expect(buildUserMessage('solve', '3 的平方是多少', 'zh')).toMatch(/使用者的問題.*3 的平方是多少.*答案/s)
+    expect(buildUserMessage('work', '你好', 'zh')).toMatch(/對方說的話.*你好.*建議/s)
+    expect(buildUserMessage('solve', 'what is 3 squared', 'en')).toMatch(/user's own question.*Answer:/s)
   })
 })
 

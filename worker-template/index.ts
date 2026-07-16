@@ -1,4 +1,4 @@
-import { buildSuggestPrompt, singleAnswerFromText } from './suggestion-policy'
+import { buildSuggestPrompt, buildUserMessage, singleAnswerFromText } from './suggestion-policy'
 
 // Cue personal Cloudflare Worker — proxies the glasses-to-Deepgram audio
 // stream + caches the rolling transcript so the LLM call can use it as
@@ -211,6 +211,9 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
 
+  // 依模式組 user message（solve＝問題→答案；對話模式＝逐字稿→建議）。
+  const userMessage = buildUserMessage(body.mode, body.transcript, lang)
+
   // Phase 3：預設串流（純文字 chunked），?stream=0 走舊 JSON 路徑。
   // OpenAI 路徑只有非串流 — plugin 以回應 Content-Type 自動判別。
   const wantStream = new URL(request.url).searchParams.get('stream') !== '0'
@@ -221,19 +224,19 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
       return jsonResponse(500, { ok: false, error: 'OPENAI_API_KEY 未設定：wrangler secret put OPENAI_API_KEY' })
     }
     if (wantStream) {
-      return await callOpenAIStream(env.OPENAI_API_KEY, systemPrompt, body.transcript, model)
+      return await callOpenAIStream(env.OPENAI_API_KEY, systemPrompt, userMessage, model)
     }
-    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript, model)
+    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, userMessage, model)
   }
   // Claude 模型 → Anthropic-first；只設了 OpenAI key 時退回 OpenAI 預設模型。
   if (env.ANTHROPIC_API_KEY) {
     if (wantStream) {
-      return await callAnthropicStream(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
+      return await callAnthropicStream(env.ANTHROPIC_API_KEY, systemPrompt, userMessage, model)
     }
-    return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
+    return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, userMessage, model)
   }
   if (env.OPENAI_API_KEY) {
-    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript, 'gpt-4o-mini')
+    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, userMessage, 'gpt-4o-mini')
   }
   return jsonResponse(500, { ok: false, error: 'no LLM API key configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' })
 }
@@ -249,9 +252,8 @@ export function isOpenAIModel(model: string): boolean {
 async function callAnthropic(
   apiKey: string,
   systemPrompt: string,
-  transcript: string,
+  userMessage: string,
   model: string,
-  lang: 'zh' | 'en',
 ): Promise<Response> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -267,9 +269,7 @@ async function callAnthropic(
       messages: [
         {
           role: 'user',
-          content: lang === 'en'
-            ? `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`
-            : `最近的對話逐字稿（對方說的話）：\n\n「${transcript}」\n\n建議：`,
+          content: userMessage,
         },
       ],
     }),
@@ -289,7 +289,7 @@ async function callAnthropic(
 async function callOpenAI(
   apiKey: string,
   systemPrompt: string,
-  transcript: string,
+  userMessage: string,
   model: string,
 ): Promise<Response> {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -305,7 +305,7 @@ async function callOpenAI(
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
-          content: `Recent conversation transcript:\n\n"${transcript}"\n\nSuggestions:`,
+          content: userMessage,
         },
       ],
     }),
@@ -327,7 +327,7 @@ async function callOpenAI(
 async function callOpenAIStream(
   apiKey: string,
   systemPrompt: string,
-  transcript: string,
+  userMessage: string,
   model: string,
 ): Promise<Response> {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -344,7 +344,7 @@ async function callOpenAIStream(
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
-          content: `Recent conversation transcript:\n\n"${transcript}"\n\nSuggestions:`,
+          content: userMessage,
         },
       ],
     }),
@@ -403,9 +403,8 @@ async function callOpenAIStream(
 async function callAnthropicStream(
   apiKey: string,
   systemPrompt: string,
-  transcript: string,
+  userMessage: string,
   model: string,
-  lang: 'zh' | 'en',
 ): Promise<Response> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -422,9 +421,7 @@ async function callAnthropicStream(
       messages: [
         {
           role: 'user',
-          content: lang === 'en'
-            ? `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`
-            : `最近的對話逐字稿（對方說的話）：\n\n「${transcript}」\n\n建議：`,
+          content: userMessage,
         },
       ],
     }),

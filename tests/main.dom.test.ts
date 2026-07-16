@@ -120,7 +120,7 @@ describe('Cue plugin DOM state machine', () => {
     const list = document.querySelector<HTMLDivElement>('#mode-list')!
     // Each mode is a <label> wrapping a radio input. Count the radios.
     const radios = list.querySelectorAll<HTMLInputElement>('input[type="radio"][name="mode"]')
-    expect(radios.length).toBe(3)
+    expect(radios.length).toBe(4)
   })
 
   it('idle-auto-pause input hydrates from storage and persists changes', async () => {

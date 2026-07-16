@@ -4,7 +4,7 @@
 // 模式同時出現在眼鏡（單擊循環）與手機設定頁（radio）。custom 模式
 // 由使用者在手機端自填 prompt（沿用 Cue 原設計）。
 
-export type ModeId = 'work' | 'daily' | 'custom'
+export type ModeId = 'work' | 'daily' | 'custom' | 'solve'
 
 export interface Mode {
   id: ModeId
@@ -58,6 +58,20 @@ export const MODES: Mode[] = [
     description: '用你自己的 system prompt（在手機設定頁填寫）。',
     systemPrompt: '', // 使用者自填；空值時 Worker 端有通用 fallback
     proactiveSupported: true,
+  },
+  {
+    id: 'solve',
+    label: '直答',
+    glyph: '☆',
+    description: '我直接問，AI 把答案顯示在眼鏡上（答案先行）。',
+    // solve 語意翻轉：收到的聲音＝使用者本人的提問，直接回答問題本身。
+    // 不附加 COMMON_RULES（那是對話模式的單一答案契約）；Worker 端 solve
+    // 有自己的答案先行契約。
+    systemPrompt:
+      '你是使用者的即時解題助手。逐字稿是使用者本人剛說出的問題，請直接把答案講出來、讓使用者能照著念；' +
+      '不是建議怎麼回話。答案先行：第一行就是答案或結論，之後最多 2–3 行關鍵步驟或理由。' +
+      '除非逐字稿、場景或知識庫明確提供，不得虛構經歷、成果或具體數字。',
+    proactiveSupported: false,
   },
 ]
 

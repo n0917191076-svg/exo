@@ -133,6 +133,23 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
   }
 }
 
+// 依模式組 user message：solve＝使用者本人的提問（問題→答案）；
+// 對話模式＝對方說的話（逐字稿→建議）。export 供測試與 worker 共用。
+export function buildUserMessage(
+  mode: string | undefined,
+  transcript: string,
+  lang: SuggestLanguage,
+): string {
+  if (normalizedMode(mode) === 'solve') {
+    return lang === 'en'
+      ? `The user's own question:\n\n"${transcript}"\n\nAnswer:`
+      : `使用者的問題：\n\n「${transcript}」\n\n答案：`
+  }
+  return lang === 'en'
+    ? `Recent conversation transcript (the other person's voice):\n\n"${transcript}"\n\nSuggestions:`
+    : `最近的對話逐字稿（對方說的話）：\n\n「${transcript}」\n\n建議：`
+}
+
 export function singleAnswerFromText(text: string): string[] {
   const answer = text.trim()
   return answer ? [answer] : []

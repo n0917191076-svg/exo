@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_MODE, MODES, modeById, nextMode } from '../src/modes'
 
 describe('mode registry', () => {
-  it('恰好三個模式：work / daily / custom', () => {
-    expect(MODES.map(m => m.id)).toEqual(['work', 'daily', 'custom'])
+  it('四個模式：work / daily / custom / solve', () => {
+    expect(MODES.map(m => m.id)).toEqual(['work', 'daily', 'custom', 'solve'])
   })
 
-  it('glyph 符合規格（官方認證字元集）：work ■、daily ●、custom ★', () => {
+  it('glyph 符合規格（官方認證字元集）：work ■、daily ●、custom ★、solve ☆', () => {
     expect(modeById('work').glyph).toBe('■')
     expect(modeById('daily').glyph).toBe('●')
     expect(modeById('custom').glyph).toBe('★')
+    expect(modeById('solve').glyph).toBe('☆')
   })
 
   it('所有 glyph 都在官方認證 Unicode 集內（LVGL 字型保證有）', () => {
@@ -45,13 +46,21 @@ describe('mode registry', () => {
     expect(p).not.toMatch(/STAR/)              // 拿掉公式化框架
   })
 
-  it('非 custom 模式的 systemPrompt 是繁中且含單一完整回答規則', () => {
-    for (const m of MODES.filter(x => x.id !== 'custom')) {
+  it('對話模式（work/daily）的 systemPrompt 含單一完整回答規則', () => {
+    for (const m of MODES.filter(x => x.id === 'work' || x.id === 'daily')) {
       expect(m.systemPrompt).toMatch(/只輸出一個完整答案/)
       expect(m.systemPrompt).toMatch(/不使用.*編號|不要.*編號/)
       expect(m.systemPrompt).toMatch(/先結論|直接.*判斷|直接.*立場/)
       expect(m.systemPrompt).toMatch(/照著念/)
     }
+  })
+
+  it('solve 模式：答案先行、語意翻轉（回答問題本身，非建議怎麼回話）', () => {
+    const p = modeById('solve').systemPrompt
+    expect(p).toMatch(/使用者本人.*問題|直接把答案/)
+    expect(p).toMatch(/答案先行|第一行就是答案/)
+    expect(p).not.toMatch(/只輸出一個完整答案/) // 不套對話模式契約
+    expect(modeById('solve').proactiveSupported).toBe(false)
   })
 
   it('所有模式 id 唯一', () => {

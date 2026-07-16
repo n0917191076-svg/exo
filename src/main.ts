@@ -181,6 +181,7 @@ let kbAttach: Record<ModeId, KbAttach> = {
   work: { personal: true, extra: true },
   daily: { personal: true, extra: false },
   custom: { personal: false, extra: false },
+  solve: { personal: true, extra: true },
 }
 
 // v0.4.0 transcript display: per-speaker rolling buffer. Pure helpers
@@ -347,6 +348,9 @@ root.innerHTML = `
           <div>自訂</div>
           <label><input id="kb-attach-custom-personal" type="checkbox" /></label>
           <label><input id="kb-attach-custom-extra" type="checkbox" /></label>
+          <div>直答</div>
+          <label><input id="kb-attach-solve-personal" type="checkbox" /></label>
+          <label><input id="kb-attach-solve-extra" type="checkbox" /></label>
         </div>
         <button id="save-kb" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存知識庫</button>
         <p id="kb-status" style="color: #2a2; font-size: .85em; min-height: 1.2em; margin: 0;"></p>
@@ -579,7 +583,7 @@ kbPersonalInput.addEventListener('input', renderKbCounts)
 kbExtraInput.addEventListener('input', renderKbCounts)
 
 function renderKbAttach(): void {
-  for (const mode of ['work', 'daily', 'custom'] as ModeId[]) {
+  for (const mode of ['work', 'daily', 'custom', 'solve'] as ModeId[]) {
     kbCheckbox(mode, 'personal').checked = kbAttach[mode].personal
     kbCheckbox(mode, 'extra').checked = kbAttach[mode].extra
   }
@@ -594,7 +598,7 @@ saveKbBtn.addEventListener('click', async () => {
   kbPersonalInput.value = kbPersonal
   kbExtraInput.value = kbExtra
   renderKbCounts()
-  for (const mode of ['work', 'daily', 'custom'] as ModeId[]) {
+  for (const mode of ['work', 'daily', 'custom', 'solve'] as ModeId[]) {
     kbAttach[mode] = {
       personal: kbCheckbox(mode, 'personal').checked,
       extra: kbCheckbox(mode, 'extra').checked,

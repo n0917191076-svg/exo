@@ -281,6 +281,7 @@ const DEFAULT_KB_ATTACH: Record<ModeId, KbAttach> = {
   work: { personal: true, extra: true },
   daily: { personal: true, extra: false },
   custom: { personal: false, extra: false },
+  solve: { personal: true, extra: true },
 }
 
 export async function getKbAttach(): Promise<Record<ModeId, KbAttach>> {
@@ -289,6 +290,7 @@ export async function getKbAttach(): Promise<Record<ModeId, KbAttach>> {
     work: { ...DEFAULT_KB_ATTACH.work },
     daily: { ...DEFAULT_KB_ATTACH.daily },
     custom: { ...DEFAULT_KB_ATTACH.custom },
+    solve: { ...DEFAULT_KB_ATTACH.solve },
   }
   if (!raw) return out
   try {
