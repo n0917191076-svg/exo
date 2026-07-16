@@ -246,7 +246,7 @@ if (!root) throw new Error('App root missing')
 
 root.innerHTML = `
   <main style="font-family: system-ui; padding: 1rem; max-width: 720px; margin: 0 auto; color: #232323;">
-    <h1 style="margin: 0 0 .25rem 0;">Cue <span style="font-size: .55em; color: #7b7b7b; font-weight: 400;">v${__APP_VERSION__}</span></h1>
+    <h1 style="margin: 0 0 .25rem 0;">Exo <span style="font-size: .55em; color: #7b7b7b; font-weight: 400;">v${__APP_VERSION__}</span></h1>
     <p style="color: #7b7b7b; margin: 0 0 1rem 0;">Helps you say the right thing.</p>
     <p id="status" style="margin: 0 0 1rem 0;">Connecting…</p>
 
@@ -353,9 +353,9 @@ root.innerHTML = `
         </label>
         <label>回答長度
           <select id="answer-length" style="padding: .35rem; margin-left: .5rem;">
-            <option value="short">短（≤10 字）</option>
-            <option value="medium">中（≤20 字）</option>
-            <option value="long">長（≤40 字）</option>
+            <option value="short">短（40–70 字）</option>
+            <option value="medium">中（80–110 字）</option>
+            <option value="long">長（110–140 字）</option>
           </select>
         </label>
         <button id="save-convo" type="button" style="margin-top: .25rem; padding: .35rem .7rem; cursor: pointer; max-width: 200px;">儲存對話設定</button>
@@ -519,10 +519,10 @@ root.innerHTML = `
     <section style="margin-top: 2rem; color: #7b7b7b; font-size: .85em;">
       <h3 style="font-size: 1em; margin: 0 0 .5rem 0;">How to use</h3>
       <ol style="padding-left: 1.25rem; line-height: 1.5;">
-        <li>Pick a mode from the list above.</li>
-        <li>Put on the glasses and open Cue from the Even Hub launcher.</li>
-        <li>Tap glasses to toggle mic on/off (privacy escape: glasses double-tap or remove glasses).</li>
-        <li>v0.1.0 produces mock suggestions on a timer so you can try the flow. Real STT + LLM lands in v0.2+.</li>
+        <li>從上方清單挑一個模式。</li>
+        <li>戴上眼鏡，從 Even Hub 啟動器開啟 Exo。</li>
+        <li>單擊眼鏡開關收音（隱私緊急退出：眼鏡雙擊或摘下眼鏡）。</li>
+        <li>未接 Worker 時用計時器假建議讓你試流程；設好個人 Worker 後即為真實語音轉文字＋LLM。</li>
       </ol>
     </section>
   </main>
