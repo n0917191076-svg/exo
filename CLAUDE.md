@@ -173,7 +173,7 @@
 **驗收**：閘門模式開關正確改變 Worker 參數與語者標記；四種觸發來源都經由 `TriggerSource` 介面運作；MediaSession 路線有明確的實測結論（成或敗都要記錄）；問句偵測測試覆蓋常見句型。
 
 ### Phase 5 — 收尾
-1. `app.json`：`package_id` 改 `com.evan.exo`、`name` 改 `Exo`、`supported_languages` 加 `zh-TW`、whitelist 換成 Evan 的 Worker 網址（**絕不能留佔位網址**，`lint-app-json.mjs` 會擋）。麥克風權限描述改為符合實際行為的繁中說明。
+1. `app.json`：`package_id` 改 `com.evan.exo`、`name` 改 `Exo`、`supported_languages` 用 `zh`（**注意**：`lint-app-json.mjs` 的 BCP-47 allowlist 只收 `en/de/fr/es/it/zh/ja/ko`，**不收 `zh-TW`**——Deepgram 才用 `zh-TW`，app.json 用 `zh`）、whitelist 換成 Evan 的 Worker 網址（**絕不能留佔位網址**，`lint-app-json.mjs` 會擋）。麥克風權限描述改為符合實際行為的繁中說明。
 2. `npm run pack` 產出 `.ehpk`；跑 `npm run test:e2e` 與 `npm run test:webkit`。
 3. 更新 README：一頁「Evan 的日常使用說明」。
 
