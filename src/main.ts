@@ -63,7 +63,7 @@ import {
   type LangMode,
   type ModelChoice,
 } from './storage'
-import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type TranscriptEvent } from './transport'
+import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type DialogTurn, type TranscriptEvent } from './transport'
 import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
 import { Vad } from './vad'
 import {
@@ -687,6 +687,7 @@ function renderModeList(): void {
     input.addEventListener('change', async () => {
       currentMode = input.value as ModeId
       await setMode(currentMode)
+      resetDialogHistory() // 換模式＝新對話脈絡，清空對話記憶
       renderModeList()
       await paint()
     })
@@ -983,6 +984,7 @@ async function runExtend(): Promise<void> {
       transcript: liveTranscript,
       customPrompt,
       recentSuggestions: recentSuggestionsRing.slice(),
+      history: dialogHistory.slice(),
       sceneNote,
       model: modelChoice,
       length: answerLength,
@@ -1187,6 +1189,9 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
   sessionSuggestionCount += 1
   try {
     const customPrompt = currentMode === 'custom' ? await getCustomPrompt() : undefined
+    // 對話記憶：閒置太久＝新對話，先清空；送出當下的逐字稿另存，成功後成一輪
+    maybeResetHistoryOnIdle(Date.now())
+    const sentTranscript = liveTranscript
     // Phase 3：串流版 — 手機側每個增量即時渲染（DOM 便宜），眼鏡側經
     // 300ms 節流；舊 Worker 回 JSON 時自動 fallback（不會有 onDelta）。
     const result = await transport.requestSuggestionsStream({
@@ -1196,6 +1201,8 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
       // v0.4.2: send recent suggestions so worker can dedupe — no LLM
       // re-emitting the same advice 3 times in a row.
       recentSuggestions: recentSuggestionsRing.slice(),
+      // 對話記憶（全模式）：最近幾輪問答，讓追問接得上
+      history: dialogHistory.slice(),
       // Phase 1：場景 / 模型 / 長度 / 語言
       sceneNote,
       model: modelChoice,
@@ -1224,6 +1231,8 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
       while (recentSuggestionsRing.length > RECENT_SUGGESTIONS_CAP) {
         recentSuggestionsRing.shift()
       }
+      // 對話記憶：把「這句話 → 給的回答」收成一輪，供下次追問接續
+      pushDialogTurn(sentTranscript, result.suggestions.join('\n'))
     } else {
       suggestions = [`(LLM error: ${result.error.slice(0, 40)})`]
     }
@@ -1238,6 +1247,29 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
 // reasonable history; older suggestions roll off naturally.
 const RECENT_SUGGESTIONS_CAP = 12
 const recentSuggestionsRing: string[] = []
+
+// 對話記憶（全模式）：最近幾輪 {them,me}，讓對方追問接得上。跨閘門收音保留，
+// 切模式或閒置過久（視為新對話）才清空；in-memory，App 重啟即歸零。
+const DIALOG_HISTORY_CAP = 6
+const DIALOG_IDLE_RESET_MS = 3 * 60_000
+let dialogHistory: DialogTurn[] = []
+let lastExchangeAt = 0
+
+function resetDialogHistory(): void {
+  dialogHistory = []
+  lastExchangeAt = 0
+}
+function maybeResetHistoryOnIdle(now: number): void {
+  if (lastExchangeAt > 0 && now - lastExchangeAt > DIALOG_IDLE_RESET_MS) resetDialogHistory()
+}
+function pushDialogTurn(them: string, me: string): void {
+  const t = them.trim()
+  const m = me.trim()
+  if (!t && !m) return
+  dialogHistory.push({ them: t, me: m })
+  while (dialogHistory.length > DIALOG_HISTORY_CAP) dialogHistory.shift()
+  lastExchangeAt = Date.now()
+}
 
 // Phase 4：手勢 → 語意事件走 gestureMapFor 純函式（模式作用域的單一
 // 事實來源），main.ts 只剩一個 dispatcher。模式切換只在手機 radio。

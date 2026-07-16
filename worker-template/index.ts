@@ -1,4 +1,4 @@
-import { buildSuggestPrompt, buildUserMessage, singleAnswerFromText } from './suggestion-policy'
+import { buildSuggestPrompt, buildUserMessage, singleAnswerFromText, type DialogTurn } from './suggestion-policy'
 
 // Cue personal Cloudflare Worker — proxies the glasses-to-Deepgram audio
 // stream + caches the rolling transcript so the LLM call can use it as
@@ -187,6 +187,7 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     kbPersonal?: string
     kbExtra?: string
     extendContext?: string
+    history?: DialogTurn[]
   }
   try {
     body = (await request.json()) as typeof body
@@ -206,6 +207,7 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     kbPersonal: body.kbPersonal,
     kbExtra: body.kbExtra,
     extendContext: body.extendContext,
+    history: body.history,
   })
 
   // 只轉發允許清單內的模型 — plugin 傳什麼不可信（bearer 洩漏時的保險）。

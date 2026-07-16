@@ -118,6 +118,32 @@ describe('solve（直答）prompt policy', () => {
   })
 })
 
+describe('對話記憶（history，全模式）', () => {
+  const hist = [
+    { them: '你們公司規模多大', me: '目前約 50 人，去年成長一倍。' },
+    { them: '那獲利呢', me: '已連續兩季轉正。' },
+  ]
+  it('對話模式：以「對方／你的回應」帶入最近對話', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'work', lang: 'zh', history: hist })
+    expect(systemPrompt).toContain('【最近對話】')
+    expect(systemPrompt).toMatch(/對方：你們公司規模多大/)
+    expect(systemPrompt).toMatch(/你的回應：目前約 50 人/)
+    expect(systemPrompt).toMatch(/針對最新這句回應/)
+  })
+  it('solve：以「問／答」帶入', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'solve', lang: 'zh', history: hist })
+    expect(systemPrompt).toMatch(/問：你們公司規模多大/)
+    expect(systemPrompt).toMatch(/答：目前約 50 人/)
+  })
+  it('無 history 時不加區塊；上限 6 輪', () => {
+    expect(buildSuggestPrompt({ mode: 'work' }).systemPrompt).not.toContain('【最近對話】')
+    const many = Array.from({ length: 10 }, (_, i) => ({ them: `Q${i}`, me: `A${i}` }))
+    const p = buildSuggestPrompt({ mode: 'work', history: many }).systemPrompt
+    expect(p).toContain('Q9')
+    expect(p).not.toContain('Q3') // 只留最後 6 輪（Q4..Q9）
+  })
+})
+
 describe('Worker single-answer normalization', () => {
   it('keeps all model text as one answer even if it contains numbered lines', () => {
     expect(singleAnswerFromText('1. 第一段\n2. 第二段')).toEqual(['1. 第一段\n2. 第二段'])

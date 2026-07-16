@@ -1,5 +1,10 @@
 export type SuggestLanguage = 'zh' | 'en'
 
+export interface DialogTurn {
+  them: string // 對方說的話（solve＝使用者的提問）
+  me: string // 當時給的回答／建議
+}
+
 export interface SuggestPromptInput {
   mode?: string
   customPrompt?: string
@@ -10,6 +15,7 @@ export interface SuggestPromptInput {
   kbPersonal?: string
   kbExtra?: string
   extendContext?: string
+  history?: DialogTurn[] // 最近幾輪對話，讓追問接得上（全模式共用）
 }
 
 const BASE_PROMPTS: Record<'work' | 'daily' | 'custom' | 'solve', string> = {
@@ -111,6 +117,19 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
     : ''
   // solve（直答）走自己的契約與長度；其餘模式走對話單一答案契約。
   const isSolve = mode === 'solve'
+  // 最近對話脈絡（全模式）：讓追問接得上。solve＝問答；對話模式＝對方/你的回應。
+  const historyTurns = (input.history ?? [])
+    .filter((h): h is DialogTurn =>
+      !!h && typeof h.them === 'string' && typeof h.me === 'string' &&
+      (h.them.trim().length > 0 || h.me.trim().length > 0))
+    .slice(-6)
+  const historyBlock = historyTurns.length
+    ? `\n\n【最近對話】\n` +
+      historyTurns.map(h => isSolve
+        ? `問：${h.them.trim()}\n答：${h.me.trim()}`
+        : `對方：${h.them.trim()}\n你的回應：${h.me.trim()}`).join('\n') +
+      '\n（以上是稍早的脈絡，供你理解追問；只需針對最新這句回應，不要重述舊內容。）'
+    : ''
   const contract = isSolve ? SOLVE_CONTRACT : COMMON_CONTRACT
   const lengthRule = (isSolve ? SOLVE_LENGTH_RULES : LENGTH_RULES)[input.length ?? 'medium']
     ?? (isSolve ? SOLVE_LENGTH_RULES.medium! : LENGTH_RULES.medium!)
@@ -129,7 +148,7 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
 
   return {
     lang,
-    systemPrompt: base + scene + kb + extend + contract + lengthBlock + language + dedupe,
+    systemPrompt: base + scene + kb + historyBlock + extend + contract + lengthBlock + language + dedupe,
   }
 }
 

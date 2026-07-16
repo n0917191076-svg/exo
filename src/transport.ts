@@ -55,6 +55,14 @@ export interface SuggestParams {
   kbExtra?: string
   /** Phase 4：延伸（extend）— 螢幕上的完整回答；Worker 據此要求「接續深入、不重複」。 */
   extendContext?: string
+  /** 對話記憶（全模式）：最近幾輪 {them,me}，讓追問接得上。Worker 組成【最近對話】脈絡。 */
+  history?: DialogTurn[]
+}
+
+/** 一輪對話：them＝對方說的話（solve＝提問）、me＝當時的回答。 */
+export interface DialogTurn {
+  them: string
+  me: string
 }
 
 export interface CueTransport {
@@ -306,7 +314,7 @@ export function createTransport(
     stats() {
       return { framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError }
     },
-    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra }) {
+    async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra, history }) {
       if (!ready) return { ok: false as const, error: 'Worker not configured' }
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 12_000)
@@ -318,7 +326,7 @@ export function createTransport(
             Authorization: `Bearer ${bearerToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra }),
+          body: JSON.stringify({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra, history }),
           signal: ctrl.signal,
         })
         if (!resp.ok) {
