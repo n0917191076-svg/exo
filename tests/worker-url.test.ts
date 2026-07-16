@@ -3,7 +3,7 @@
 // 直接 import worker-template 的 export（頂層無副作用，node 環境可載）。
 
 import { describe, expect, it } from 'vitest'
-import { deepgramHttpUrl } from '../worker-template/index'
+import { deepgramHttpUrl, isOpenAIModel } from '../worker-template/index'
 
 describe('deepgramHttpUrl（gated 參數）', () => {
   it('閘門開：無 diarize/utterances，保留 punctuate/smart_format/nova-3', () => {
@@ -27,5 +27,18 @@ describe('deepgramHttpUrl（gated 參數）', () => {
     expect(deepgramHttpUrl('en', true)).toContain('language=en')
     expect(deepgramHttpUrl('en', true)).not.toContain('diarize')
     expect(deepgramHttpUrl('en', false)).toContain('diarize=true')
+  })
+})
+
+describe('isOpenAIModel（模型服務商路由）', () => {
+  it('gpt / o1 / o3 前綴 → OpenAI', () => {
+    expect(isOpenAIModel('gpt-4o')).toBe(true)
+    expect(isOpenAIModel('gpt-4o-mini')).toBe(true)
+    expect(isOpenAIModel('o1')).toBe(true)
+    expect(isOpenAIModel('o3-mini')).toBe(true)
+  })
+  it('claude 模型 → 非 OpenAI', () => {
+    expect(isOpenAIModel('claude-sonnet-4-6')).toBe(false)
+    expect(isOpenAIModel('claude-haiku-4-5')).toBe(false)
   })
 })

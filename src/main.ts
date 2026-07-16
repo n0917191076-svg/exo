@@ -18,6 +18,7 @@ import {
   getKbExtra,
   getKbPersonal,
   getLang,
+  coerceModelChoice,
   getModelChoice,
   getSceneNote,
   getIdleAutoPauseMin,
@@ -300,8 +301,14 @@ root.innerHTML = `
         </label>
         <label>模型
           <select id="model-choice" style="padding: .35rem; margin-left: .5rem;">
-            <option value="claude-sonnet-4-6">Sonnet（預設，聰明）</option>
-            <option value="claude-haiku-4-5">Haiku（快）</option>
+            <optgroup label="Claude">
+              <option value="claude-sonnet-4-6">Sonnet（預設，聰明）</option>
+              <option value="claude-haiku-4-5">Haiku（快）</option>
+            </optgroup>
+            <optgroup label="ChatGPT（需 Worker 設 OPENAI_API_KEY）">
+              <option value="gpt-4o">GPT-4o（聰明）</option>
+              <option value="gpt-4o-mini">GPT-4o mini（快）</option>
+            </optgroup>
           </select>
         </label>
         <label>回答長度
@@ -535,7 +542,7 @@ const convoStatus = document.querySelector<HTMLParagraphElement>('#convo-status'
 saveConvoBtn.addEventListener('click', async () => {
   sceneNote = sceneNoteInput.value
   langMode = langSelect.value === 'en' ? 'en' : 'zh'
-  modelChoice = modelSelect.value === 'claude-haiku-4-5' ? 'claude-haiku-4-5' : 'claude-sonnet-4-6'
+  modelChoice = coerceModelChoice(modelSelect.value)
   answerLength = answerLengthSelect.value === 'short' || answerLengthSelect.value === 'long'
     ? answerLengthSelect.value
     : 'medium'

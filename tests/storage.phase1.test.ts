@@ -9,6 +9,7 @@ import {
   DEFAULT_ANSWER_LENGTH,
   DEFAULT_LANG,
   DEFAULT_MODEL,
+  coerceModelChoice,
   getAnswerLength,
   getLang,
   getModelChoice,
@@ -53,6 +54,18 @@ describe('model choice round-trip', () => {
   it('存 haiku 取回 haiku', async () => {
     await setModelChoice('claude-haiku-4-5')
     expect(await getModelChoice()).toBe('claude-haiku-4-5')
+  })
+  it('存 ChatGPT 模型（gpt-4o / gpt-4o-mini）取回一致', async () => {
+    await setModelChoice('gpt-4o')
+    expect(await getModelChoice()).toBe('gpt-4o')
+    await setModelChoice('gpt-4o-mini')
+    expect(await getModelChoice()).toBe('gpt-4o-mini')
+  })
+  it('coerceModelChoice：合法原樣、非法回退預設', () => {
+    expect(coerceModelChoice('gpt-4o')).toBe('gpt-4o')
+    expect(coerceModelChoice('claude-haiku-4-5')).toBe('claude-haiku-4-5')
+    expect(coerceModelChoice('gpt-9000')).toBe(DEFAULT_MODEL)
+    expect(coerceModelChoice(null)).toBe(DEFAULT_MODEL)
   })
   it('儲存的非法值回退預設', async () => {
     globalThis.localStorage.setItem('cue:model:v1', 'gpt-9000')

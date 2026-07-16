@@ -212,10 +212,17 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
   const model = ALLOWED_MODELS.includes(body.model ?? '') ? body.model! : DEFAULT_MODEL
 
   // Phase 3：預設串流（純文字 chunked），?stream=0 走舊 JSON 路徑。
-  // OpenAI fallback 只有非串流 — plugin 以回應 Content-Type 自動判別。
+  // OpenAI 路徑只有非串流 — plugin 以回應 Content-Type 自動判別。
   const wantStream = new URL(request.url).searchParams.get('stream') !== '0'
 
-  // Anthropic-first; OpenAI fallback if no Anthropic key is set.
+  // 使用者選了 ChatGPT 模型 → 走 OpenAI（需 OPENAI_API_KEY）。
+  if (isOpenAIModel(model)) {
+    if (!env.OPENAI_API_KEY) {
+      return jsonResponse(500, { ok: false, error: 'OPENAI_API_KEY 未設定：wrangler secret put OPENAI_API_KEY' })
+    }
+    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript, model)
+  }
+  // Claude 模型 → Anthropic-first；只設了 OpenAI key 時退回 OpenAI 預設模型。
   if (env.ANTHROPIC_API_KEY) {
     if (wantStream) {
       return await callAnthropicStream(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
@@ -223,13 +230,18 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     return await callAnthropic(env.ANTHROPIC_API_KEY, systemPrompt, body.transcript, model, lang)
   }
   if (env.OPENAI_API_KEY) {
-    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript)
+    return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript, 'gpt-4o-mini')
   }
   return jsonResponse(500, { ok: false, error: 'no LLM API key configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' })
 }
 
-const ALLOWED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6']
+const ALLOWED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'gpt-4o', 'gpt-4o-mini']
 const DEFAULT_MODEL = 'claude-sonnet-4-6'
+
+// 依 model 名稱前綴決定服務商路由。export 供測試。
+export function isOpenAIModel(model: string): boolean {
+  return model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3')
+}
 
 async function callAnthropic(
   apiKey: string,
@@ -275,6 +287,7 @@ async function callOpenAI(
   apiKey: string,
   systemPrompt: string,
   transcript: string,
+  model: string,
 ): Promise<Response> {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -283,7 +296,7 @@ async function callOpenAI(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model,
       max_tokens: 1024,
       messages: [
         { role: 'system', content: systemPrompt },

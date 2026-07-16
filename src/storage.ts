@@ -192,7 +192,7 @@ const KEY_MODEL = 'cue:model:v1'
 const KEY_ANSWER_LENGTH = 'cue:answer-length:v1'
 const KEY_LANG = 'cue:lang:v1'
 
-export type ModelChoice = 'claude-haiku-4-5' | 'claude-sonnet-4-6'
+export type ModelChoice = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'gpt-4o' | 'gpt-4o-mini'
 export type AnswerLength = 'short' | 'medium' | 'long'
 export type LangMode = 'zh' | 'en'
 
@@ -200,7 +200,12 @@ export const DEFAULT_MODEL: ModelChoice = 'claude-sonnet-4-6'
 export const DEFAULT_ANSWER_LENGTH: AnswerLength = 'medium'
 export const DEFAULT_LANG: LangMode = 'zh'
 
-const MODEL_CHOICES: ModelChoice[] = ['claude-haiku-4-5', 'claude-sonnet-4-6']
+const MODEL_CHOICES: ModelChoice[] = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'gpt-4o', 'gpt-4o-mini']
+
+// 把任意字串收斂成合法 ModelChoice（非法回退預設）。下拉解析與儲存讀取共用。
+export function coerceModelChoice(raw: string | null | undefined): ModelChoice {
+  return MODEL_CHOICES.includes(raw as ModelChoice) ? (raw as ModelChoice) : DEFAULT_MODEL
+}
 const ANSWER_LENGTHS: AnswerLength[] = ['short', 'medium', 'long']
 const LANG_MODES: LangMode[] = ['zh', 'en']
 
@@ -215,7 +220,7 @@ export async function setSceneNote(note: string): Promise<void> {
 // 舊版本或手動改動污染，防禦性驗證便宜。
 export async function getModelChoice(): Promise<ModelChoice> {
   const raw = await readRaw(KEY_MODEL)
-  return MODEL_CHOICES.includes(raw as ModelChoice) ? (raw as ModelChoice) : DEFAULT_MODEL
+  return coerceModelChoice(raw)
 }
 export async function setModelChoice(m: ModelChoice): Promise<void> {
   await writeRaw(KEY_MODEL, m)
