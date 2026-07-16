@@ -136,7 +136,7 @@
    - `custom`（自訂）glyph `★`：使用者自填 prompt（沿用 Cue 原設計）。
    每個 systemPrompt 用繁體中文撰寫，共同規則見「## 回答輸出契約」（單一完整答案，非 2–3 條）。
 3. **場景說明（scene note）**：settings 新增一個文字欄「目前場景」（例：面試 / 簡報 / 會議＋一句補充）。/suggest 時原樣附進 prompt：`【目前場景】...`。
-4. **模型選擇**：settings 下拉 — Claude：`claude-haiku-4-5`（快）/ `claude-sonnet-4-6`（預設，聰明）；ChatGPT：`gpt-4o`（聰明）/ `gpt-4o-mini`（快）。傳給 Worker，Worker 依 model 前綴路由（`isOpenAIModel`：`gpt/o1/o3`→OpenAI Chat Completions，其餘→Anthropic Messages）。**ChatGPT 需在 Worker 設 `wrangler secret put OPENAI_API_KEY`**，未設時選 ChatGPT 會回明確錯誤。OpenAI 路徑目前非串流（回 JSON，plugin 依 Content-Type 自動判別）；答案不即時逐字，串流為後續可加項。
+4. **模型選擇**：settings 下拉 — Claude：`claude-haiku-4-5`（快）/ `claude-sonnet-4-6`（預設，聰明）；ChatGPT：`gpt-4o`（聰明）/ `gpt-4o-mini`（快）。傳給 Worker，Worker 依 model 前綴路由（`isOpenAIModel`：`gpt/o1/o3`→OpenAI Chat Completions，其餘→Anthropic Messages）。**ChatGPT 需在 Worker 設 `wrangler secret put OPENAI_API_KEY`**，未設時選 ChatGPT 會回明確錯誤。OpenAI 路徑亦支援串流（`callOpenAIStream`，對稱 `callAnthropicStream`），與 Claude 同樣逐字上屏；`?stream=0` 回 JSON。
 5. **回答長度**：settings 三選一 短/中/長 → 依「## 回答輸出契約」長度表附加（中文 40–70／80–110／110–140 字；英文 20–30／35–50／50–70 words，已壓短對齊眼鏡單一視窗）。
 6. **語言模式**：settings 切換 中文/英文。英文模式：第一行『譯：<對方那句話的中文翻譯>』，空一行後給**一個**完整英文回答（CEFR B1 內）。詳見「## 回答輸出契約」。
 **驗收**：mock 或真 Worker 下，切換模式/模型/長度/語言，/suggest 的 payload 與回覆格式正確；`npm test` 綠（修掉因刪模式而壞的測試，比照原測試風格補新模式的測試）。

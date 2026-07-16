@@ -220,6 +220,9 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
     if (!env.OPENAI_API_KEY) {
       return jsonResponse(500, { ok: false, error: 'OPENAI_API_KEY 未設定：wrangler secret put OPENAI_API_KEY' })
     }
+    if (wantStream) {
+      return await callOpenAIStream(env.OPENAI_API_KEY, systemPrompt, body.transcript, model)
+    }
     return await callOpenAI(env.OPENAI_API_KEY, systemPrompt, body.transcript, model)
   }
   // Claude 模型 → Anthropic-first；只設了 OpenAI key 時退回 OpenAI 預設模型。
@@ -317,6 +320,81 @@ async function callOpenAI(
   return suggestions.length > 0
     ? jsonResponse(200, { ok: true, suggestions })
     : jsonResponse(502, { ok: false, error: 'openai returned empty text' })
+}
+
+// OpenAI 串流版 — 對稱於 callAnthropicStream，把 chat completions 的
+// delta.content 增量以純文字 chunked 轉發；plugin 端累積後當單一答案。
+async function callOpenAIStream(
+  apiKey: string,
+  systemPrompt: string,
+  transcript: string,
+  model: string,
+): Promise<Response> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      stream: true,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: `Recent conversation transcript:\n\n"${transcript}"\n\nSuggestions:`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok || !res.body) {
+    const text = await res.text()
+    return jsonResponse(res.status || 502, { ok: false, error: `openai ${res.status}: ${text.slice(0, 200)}` })
+  }
+
+  const { readable, writable } = new TransformStream()
+  const writer = writable.getWriter()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+
+  // 背景消化 SSE：`data: {...}` 行 → choices[0].delta.content 寫進流。
+  void (async () => {
+    const reader = res.body!.getReader()
+    let buf = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? '' // 最後一行可能不完整，留到下一輪
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const payload = line.slice(6).trim()
+          if (payload === '[DONE]') continue
+          try {
+            const evt = JSON.parse(payload) as {
+              choices?: Array<{ delta?: { content?: string } }>
+            }
+            const delta = evt.choices?.[0]?.delta?.content
+            if (delta) await writer.write(encoder.encode(delta))
+          } catch {
+            /* 非 JSON 的 data 行 — 忽略 */
+          }
+        }
+      }
+    } catch {
+      /* 上游中斷 — 關流讓 client 拿到目前為止的內容 */
+    } finally {
+      try { await writer.close() } catch { /* already closed */ }
+    }
+  })()
+
+  return new Response(readable, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() },
+  })
 }
 
 // Phase 3：串流版 — 向 Anthropic 開 stream:true，把 SSE 的 text_delta
