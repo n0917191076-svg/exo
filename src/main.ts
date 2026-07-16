@@ -64,6 +64,7 @@ import {
   type ModelChoice,
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type DialogTurn, type TranscriptEvent } from './transport'
+import { downscaleImage, type DownscaledImage } from './imaging'
 import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
 import { Vad } from './vad'
 import {
@@ -265,6 +266,16 @@ root.innerHTML = `
         <input id="solve-input" type="text" placeholder="輸入問題，Enter 送出…" style="flex: 1; padding: .45rem; border-radius: 4px; border: 1px solid #bbb;" />
         <button id="solve-send" type="button" style="padding: .45rem .9rem; cursor: pointer;">送出</button>
       </div>
+    </section>
+
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">圖片問答（拍照／選圖）</h2>
+      <p style="color: #7b7b7b; font-size: .85em; margin: 0 0 .5rem 0;">上傳一張照片即可——AI 會自己辨識圖中的題目/問題並直接作答（縮圖後上傳，長邊 ≤1568）。</p>
+      <div style="display: flex; gap: .5rem; align-items: center; max-width: 520px; flex-wrap: wrap;">
+        <input id="vision-file" type="file" accept="image/*" />
+        <button id="vision-send" type="button" disabled style="padding: .45rem .9rem; cursor: pointer;">問這張圖</button>
+      </div>
+      <img id="vision-preview" alt="預覽" style="display: none; margin-top: .5rem; max-width: 240px; max-height: 240px; border-radius: 4px; border: 1px solid #ccc;" />
     </section>
 
     <div id="privacy-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 100;">
@@ -526,6 +537,27 @@ solveSend.addEventListener('click', submitSolveText)
 solveInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); submitSolveText() }
 })
+
+// Phase 7：圖片問答 — 選圖→縮圖→預覽→送出。
+const visionFile = document.querySelector<HTMLInputElement>('#vision-file')!
+const visionSend = document.querySelector<HTMLButtonElement>('#vision-send')!
+const visionPreview = document.querySelector<HTMLImageElement>('#vision-preview')!
+let pendingImage: DownscaledImage | null = null
+visionFile.addEventListener('change', async () => {
+  const f = visionFile.files?.[0]
+  if (!f) { pendingImage = null; visionSend.disabled = true; visionPreview.style.display = 'none'; return }
+  try {
+    pendingImage = await downscaleImage(f)
+    visionPreview.src = pendingImage.dataUrl
+    visionPreview.style.display = 'block'
+    visionSend.disabled = false
+  } catch (err) {
+    pendingImage = null
+    visionSend.disabled = true
+    liveSuggestionsEl.textContent = `（讀圖失敗：${err instanceof Error ? err.message : String(err)}）`
+  }
+})
+visionSend.addEventListener('click', () => { void runVisionQuery() })
 
 // Phase 4：手機大按鈕（phone-button TriggerSource）— 按住收音、放開送出、
 // 滑出取消。可盲按：狀態靠底色與文字反映。
@@ -1331,6 +1363,51 @@ async function runSolveTextQuery(question: string): Promise<void> {
       pushDialogTurn(q, result.suggestions.join('\n'))
     } else {
       liveSuggestionsEl.textContent = `(LLM error: ${result.error.slice(0, 60)})`
+      suggestions = []
+    }
+    await paint()
+  } finally {
+    suggestionInFlight = false
+  }
+}
+
+// Phase 7：圖片問答 — 送 pendingImage 到 /vision，模型自己辨識圖中問題並作答，
+// 串流到手機與眼鏡，接對話記憶。
+async function runVisionQuery(): Promise<void> {
+  if (!pendingImage) return
+  if (!transport || !isRealMode) {
+    liveSuggestionsEl.textContent = '（圖片問答需先在下方設定 Worker URL 與 token）'
+    return
+  }
+  if (suggestionInFlight || extendInFlight) return
+  suggestionInFlight = true
+  try {
+    maybeResetHistoryOnIdle(Date.now())
+    extendedText = ''
+    liveSuggestionsEl.textContent = '（辨識圖片中…）'
+    const result = await transport.requestVisionStream({
+      imageBase64: pendingImage.base64,
+      mediaType: pendingImage.mediaType,
+      mode: 'solve',
+      lang: langMode,
+      length: answerLength,
+      history: dialogHistory.slice(),
+      kbPersonal: kbAttach.solve.personal && kbPersonal ? kbPersonal : undefined,
+      kbExtra: kbAttach.solve.extra && kbExtra ? kbExtra : undefined,
+    }, {
+      onDelta(accumulated) {
+        suggestions = [accumulated]
+        liveSuggestionsEl.textContent = accumulated
+        glassesThrottle.push(() => { void paint() })
+      },
+    })
+    if (result.ok) {
+      glassesThrottle.flush()
+      liveSuggestionsEl.textContent = result.answer
+      suggestions = [result.answer]
+      pushDialogTurn('（圖片提問）', result.answer)
+    } else {
+      liveSuggestionsEl.textContent = `(圖片問答失敗：${result.error.slice(0, 60)})`
       suggestions = []
     }
     await paint()

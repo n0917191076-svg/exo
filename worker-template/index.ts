@@ -477,6 +477,128 @@ async function callAnthropicStream(
   })
 }
 
+// Phase 7：圖片問答。使用者只上傳照片，模型先辨識圖中的題目再依 solve 直答
+// 格式作答。走 Anthropic 視覺（需 ANTHROPIC_API_KEY；gpt 視覺留待後續）。
+async function handleVision(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') return jsonResponse(405, { ok: false, error: 'POST only' })
+  const auth = request.headers.get('Authorization') ?? ''
+  if (!env.SHARED_SECRET || auth !== `Bearer ${env.SHARED_SECRET}`) {
+    return jsonResponse(401, { ok: false, error: 'unauthorized' })
+  }
+  if (!env.ANTHROPIC_API_KEY) {
+    return jsonResponse(500, { ok: false, error: '圖片問答需要 ANTHROPIC_API_KEY（Anthropic 視覺）' })
+  }
+  let body: {
+    image_base64?: string
+    media_type?: string
+    question?: string
+    mode?: string
+    lang?: string
+    length?: string
+    kbPersonal?: string
+    kbExtra?: string
+    history?: DialogTurn[]
+  }
+  try {
+    body = (await request.json()) as typeof body
+  } catch {
+    return jsonResponse(400, { ok: false, error: 'invalid JSON body' })
+  }
+  if (!body.image_base64 || typeof body.image_base64 !== 'string') {
+    return jsonResponse(400, { ok: false, error: 'image_base64 required' })
+  }
+  const mediaType = typeof body.media_type === 'string' && body.media_type.startsWith('image/')
+    ? body.media_type
+    : 'image/jpeg'
+  const { systemPrompt } = buildSuggestPrompt({
+    mode: body.mode ?? 'solve',
+    lang: body.lang,
+    length: body.length,
+    kbPersonal: body.kbPersonal,
+    kbExtra: body.kbExtra,
+    history: body.history,
+  })
+  const q = body.question?.trim()
+  const instruction = q
+    ? `使用者的問題：「${q}」\n請看圖回答（答案先行）。`
+    : '請先辨識圖片中的題目或問題是什麼，再直接作答（答案先行，不要先描述整張圖）。'
+  const content = [
+    { type: 'image', source: { type: 'base64', media_type: mediaType, data: body.image_base64 } },
+    { type: 'text', text: instruction },
+  ]
+  // 視覺一律用 Claude（gpt 視覺留待後續）；選了 gpt 就退回預設 Claude。
+  const model = ALLOWED_MODELS.includes(body.model ?? '') && !isOpenAIModel(body.model ?? '')
+    ? body.model!
+    : DEFAULT_MODEL
+  return await callAnthropicVisionStream(env.ANTHROPIC_API_KEY, systemPrompt, content, model)
+}
+
+// 對稱於 callAnthropicStream，但 message content 是 image+text 區塊陣列。
+async function callAnthropicVisionStream(
+  apiKey: string,
+  systemPrompt: string,
+  content: Array<Record<string, unknown>>,
+  model: string,
+): Promise<Response> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      stream: true,
+      system: systemPrompt,
+      messages: [{ role: 'user', content }],
+    }),
+  })
+  if (!res.ok || !res.body) {
+    const text = await res.text()
+    return jsonResponse(res.status || 502, { ok: false, error: `anthropic ${res.status}: ${text.slice(0, 200)}` })
+  }
+  const { readable, writable } = new TransformStream()
+  const writer = writable.getWriter()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  void (async () => {
+    const reader = res.body!.getReader()
+    let buf = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6)) as {
+              type?: string
+              delta?: { type?: string; text?: string }
+            }
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+              await writer.write(encoder.encode(evt.delta.text))
+            }
+          } catch {
+            /* 非 JSON 的 data 行 — 忽略 */
+          }
+        }
+      }
+    } catch {
+      /* 上游中斷 */
+    } finally {
+      try { await writer.close() } catch { /* already closed */ }
+    }
+  })()
+  return new Response(readable, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() },
+  })
+}
+
 async function handleWebSocket(request: Request, env: Env): Promise<Response> {
   // Auth via query token (WebSocket doesn't support custom headers from
   // browser clients reliably, so we accept the bearer in ?token=).
@@ -560,6 +682,7 @@ export default {
     const url = new URL(request.url)
     if (url.pathname === '/healthz') return jsonResponse(200, { ok: true })
     if (url.pathname === '/suggest') return handleSuggest(request, env)
+    if (url.pathname === '/vision') return handleVision(request, env)
     if (url.pathname === '/transcribe') return handleTranscribe(request, env)
     if (url.pathname === '/ws') return handleWebSocket(request, env)
     return jsonResponse(404, { ok: false, error: 'not found' })

@@ -65,6 +65,20 @@ export interface DialogTurn {
   me: string
 }
 
+/** /vision 的請求參數 — 只送縮圖 base64，模型自己辨識圖中問題。 */
+export interface VisionParams {
+  imageBase64: string
+  mediaType: string
+  /** 可選：附帶的文字提問；不給時模型自行辨識圖中題目。 */
+  question?: string
+  mode?: string
+  lang?: string
+  length?: string
+  kbPersonal?: string
+  kbExtra?: string
+  history?: DialogTurn[]
+}
+
 export interface CueTransport {
   ready: boolean
   startMicSession: (onTranscript: (e: TranscriptEvent) => void, onError: (msg: string) => void) => Promise<void>
@@ -83,6 +97,14 @@ export interface CueTransport {
     params: SuggestParams,
     cb: { onDelta: (accumulated: string) => void },
   ) => Promise<{ ok: true; suggestions: string[]; streamed: boolean } | { ok: false; error: string }>
+  /**
+   * Phase 7：圖片問答 /vision（串流純文字）。只送縮圖 base64，模型自己辨識
+   * 圖中問題並依 solve 直答格式回答。onDelta 同 requestSuggestionsStream。
+   */
+  requestVisionStream: (
+    params: VisionParams,
+    cb: { onDelta: (accumulated: string) => void },
+  ) => Promise<{ ok: true; answer: string } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
   stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
 }
@@ -394,6 +416,61 @@ export function createTransport(
         return suggestions.length > 0
           ? { ok: true as const, suggestions, streamed: true as const }
           : { ok: false as const, error: 'empty suggestion response' }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false as const, error: msg }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+    async requestVisionStream(params, { onDelta }) {
+      if (!ready) return { ok: false as const, error: 'Worker not configured' }
+      const ctrl = new AbortController()
+      // 圖片處理較慢 — 放寬到 45s
+      const timer = setTimeout(() => ctrl.abort(), 45_000)
+      try {
+        const resp = await fetch(`${baseHttp}/vision`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${bearerToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image_base64: params.imageBase64,
+            media_type: params.mediaType,
+            question: params.question,
+            mode: params.mode,
+            lang: params.lang,
+            length: params.length,
+            kbPersonal: params.kbPersonal,
+            kbExtra: params.kbExtra,
+            history: params.history,
+          }),
+          signal: ctrl.signal,
+        })
+        if (!resp.ok) {
+          try {
+            const j = (await resp.json()) as { error?: string }
+            return { ok: false as const, error: j.error ?? `Worker HTTP ${resp.status}` }
+          } catch {
+            return { ok: false as const, error: `Worker HTTP ${resp.status}` }
+          }
+        }
+        if (!resp.body) return { ok: false as const, error: 'no response body' }
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let accumulated = ''
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          accumulated += decoder.decode(value, { stream: true })
+          if (accumulated.length > 0) onDelta(accumulated)
+        }
+        accumulated += decoder.decode()
+        const answer = accumulated.trim()
+        return answer
+          ? { ok: true as const, answer }
+          : { ok: false as const, error: 'empty vision response' }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { ok: false as const, error: msg }
