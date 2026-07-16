@@ -42,10 +42,11 @@ describe('mode registry', () => {
     expect(p).toMatch(/自然/)     // 「僅在自然時使用」的限定
   })
 
-  it('非 custom 模式的 systemPrompt 是繁中且含共同規則', () => {
+  it('非 custom 模式的 systemPrompt 是繁中且含單一完整回答規則', () => {
     for (const m of MODES.filter(x => x.id !== 'custom')) {
-      expect(m.systemPrompt).toMatch(/2–3 條/)
-      expect(m.systemPrompt).toMatch(/先結論|先講結論/)
+      expect(m.systemPrompt).toMatch(/只輸出一個完整答案/)
+      expect(m.systemPrompt).toMatch(/不使用.*編號|不要.*編號/)
+      expect(m.systemPrompt).toMatch(/先結論|直接.*判斷|直接.*立場/)
       expect(m.systemPrompt).toMatch(/照著念/)
     }
   })

@@ -377,8 +377,8 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(await fake.runtime.getStorage('cue:wearer-speaker-id:v1')).toBe('1')
   })
 
-  // ─── Phase 3: 串流建議 — 手機側逐字、結束後條列 ─────────────────
-  it('串流 /suggest：手機側逐字顯示，結束後切回條列並渲染眼鏡', async () => {
+  // ─── Phase 3: 串流建議 — 手機側逐字、結束後保留單一完整回答 ────────
+  it('串流 /suggest：手機側逐字顯示，結束後顯示未編號完整回答並渲染眼鏡', async () => {
     let suggestHit = false
     let releaseChunk2: () => void = () => {}
     const gate = new Promise<void>(r => { releaseChunk2 = r })
@@ -403,9 +403,9 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
         suggestHit = true
         const body = new ReadableStream<Uint8Array>({
           start(controller) {
-            controller.enqueue(encoder.encode('1. 先講'))
+            controller.enqueue(encoder.encode('我認為 Agent 的演進，是從 READ ONLY '))
             void gate.then(() => {
-              controller.enqueue(encoder.encode('結論。\n2. 帶關鍵數字。'))
+              controller.enqueue(encoder.encode('走向 TAKE ACTION，讓模型可以透過 MCP 與 API 執行任務。'))
               controller.close()
             })
           },
@@ -430,14 +430,16 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(suggestHit).toBe(true)
     await new Promise(r => setTimeout(r, 40))
     const liveEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
-    expect(liveEl.textContent).toContain('1. 先講') // 串流中：手機已有部分文字
+    expect(liveEl.textContent).toContain('READ ONLY') // 串流中：手機已有部分文字
 
-    // 放行第二個 chunk → 串流結束 → 條列 + 眼鏡渲染
+    // 放行第二個 chunk → 串流結束 → 未編號完整回答 + 眼鏡渲染
     releaseChunk2()
     await new Promise(r => setTimeout(r, 380)) // > 300ms 節流窗，讓 trailing/flush 落定
-    expect(liveEl.textContent).toBe('1. 先講結論。\n2. 帶關鍵數字。')
-    expect(fake.lastRender()).toMatch(/先講結論/)
-    expect(fake.lastRender()).toMatch(/帶關鍵數字/)
+    expect(liveEl.textContent).toBe(
+      '我認為 Agent 的演進，是從 READ ONLY 走向 TAKE ACTION，讓模型可以透過 MCP 與 API 執行任務。',
+    )
+    expect(fake.lastRender()).not.toMatch(/1\.[■●★]/)
+    expect(fake.lastRender()).toContain('TAKE ACTION')
   })
 
   // ─── Phase 4: 閘門收音（gated）＋ cancel ＋ extend ────────────────
@@ -552,8 +554,8 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
   })
 
   it('回答視圖尾端滾動窗：超長答案只留最新內容，總量 ≤512 bytes', async () => {
-    // 30 條中文建議 — 全文遠超 512 bytes，眼鏡端必須裁頭留尾
-    const many = Array.from({ length: 30 }, (_, i) => `第${i + 1}條建議內容測試字串`)
+    // 單一中文長文 — 全文遠超 512 bytes，眼鏡端必須裁頭留尾
+    const longAnswer = `${'這是一段有內容的專業分析。'.repeat(30)}唯一尾端標記`
     globalThis.fetch = vi.fn(async (url: string) => {
       const u = String(url)
       if (u.includes('/healthz')) return new Response('ok', { status: 200 })
@@ -563,7 +565,7 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
         })
       }
       if (u.includes('/suggest')) {
-        return new Response(JSON.stringify({ ok: true, suggestions: many }), {
+        return new Response(JSON.stringify({ ok: true, suggestions: [longAnswer] }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         })
       }
@@ -582,11 +584,10 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     fake.invokeTap('glasses')
     await new Promise(r => setTimeout(r, 150))
 
-    const out = fake.lastRender()
-    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(512)
-    expect(out).toContain('第30條建議內容測試字串') // 最新內容永遠可見
-    expect(out).not.toContain('第1條建議內容測試字串') // 最舊的被裁
-    expect(out).toContain('▲') // 裁切提示（認證字元）
+    const rendered = fake.lastRender()
+    expect(new TextEncoder().encode(rendered).length).toBeLessThanOrEqual(512)
+    expect(rendered).toContain('唯一尾端標記')
+    expect(rendered).not.toMatch(/1\.[■●★]/)
   })
 
   it('自動收音：final transcript 命中問句 → 立即觸發 /suggest（繞過 debounce）', async () => {

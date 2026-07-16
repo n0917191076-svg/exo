@@ -76,7 +76,7 @@ import {
   shouldRequestSuggestion,
   speakerLabel,
   trimToSentences,
-  wrapWords,
+  wrapAnswerLines,
   type ConversationTurn,
 } from './utterance'
 
@@ -162,10 +162,10 @@ function effectiveGated(): boolean {
 }
 let extendInFlight = false
 
-// 螢幕上的完整回答（延伸優先；否則把建議組回編號清單）
+// 螢幕上的完整回答（延伸優先；否則保留 Worker 原始內容）
 function currentAnswerText(): string {
   if (extendedText) return extendedText
-  return suggestions.map((sg, i) => `${i + 1}. ${sg}`).join('\n')
+  return suggestions.join('\n')
 }
 
 // 「回答顯示中」狀態 — 手勢表的 hasAnswer 維度
@@ -348,7 +348,7 @@ root.innerHTML = `
 
     <section>
       <h2 style="font-size: 1.1em; margin: 1.5rem 0 .5rem 0;">Custom prompt (used when Mode = Custom)</h2>
-      <textarea id="custom-prompt" rows="4" style="width: 100%; max-width: 520px; padding: .5rem; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: .9em;" placeholder="You are a... Suggest 2-3 short responses, numbered, no preamble."></textarea>
+      <textarea id="custom-prompt" rows="4" style="width: 100%; max-width: 520px; padding: .5rem; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: .9em;" placeholder="描述角色、立場與語氣；Exo 會套用單一完整回答與事實規則。"></textarea>
       <button id="save-custom" type="button" style="margin-top: .35rem; padding: .35rem .7rem; cursor: pointer;">Save custom prompt</button>
     </section>
 
@@ -689,31 +689,8 @@ function trunc(s: string, n: number): string {
 }
 
 // Width budget per line on the 576-px greyscale display, derived from the
-// existing trunc-to-38 the v0.2 build used. Two lines per suggestion is the
-// sweet spot — enough room to land a question without dropping context.
+// existing trunc-to-38 the v0.2 build used.
 const LINE_WIDTH = 38
-const SUGGESTION_MAX_LINES = 2
-
-// Per-mode prefix glyph for suggestions — gives the user a visual cue of
-// which coach they're hearing without re-reading the header. Numbers stay
-// for accessibility ordering.
-// 一律用官方認證字元（LVGL 字型保證有，集外字元被靜默丟棄）
-const MODE_BULLET: Record<ModeId, string> = {
-  work: '■',
-  daily: '●',
-  custom: '★',
-}
-
-function emphasizeFirstWord(s: string): string {
-  // Cheap proxy for "imperative-verb emphasis": uppercase the first word.
-  // The LLM's suggestion templates put the action verb first in every
-  // mode prompt, so this lands the eye on the right word without any
-  // English-NLP gymnastics.
-  const m = /^(\S+)(\s.*)?$/.exec(s.trim())
-  if (!m) return s
-  const [, first, rest] = m
-  return `${first!.toUpperCase()}${rest ?? ''}`
-}
 
 function renderGlasses(): string {
   const mode: Mode = modeById(currentMode)
@@ -747,7 +724,7 @@ function renderGlasses(): string {
       ).length + 1 // +1：answer 區與上下區之間的換行
       const budget = GLASSES_CONTENT_MAX_BYTES - fixedBytes
       const answerLines = fitTailByBytes(
-        currentAnswerText().split('\n').map(ln => trunc(ln, 76)),
+        wrapAnswerLines(currentAnswerText(), LINE_WIDTH),
         budget,
       )
       return [...fixedTop, ...answerLines, ...fixedBottom].join('\n')
@@ -798,24 +775,23 @@ function renderGlasses(): string {
       lines.push(`err: ${s.lastError}`)
     }
   }
+  const footer = mode.proactiveSupported
+    ? '> 單擊 送出   > 雙擊 取消   > 戒指雙擊 話題'
+    : '> 單擊 送出   > 雙擊 取消'
   lines.push('')
   lines.push('─'.repeat(20)) // 認證字元（em-dash 不在集內）
   if (suggestions.length > 0) {
-    const bullet = MODE_BULLET[currentMode] ?? '·'
-    const isCustom = currentMode === 'custom'
-    suggestions.slice(0, 3).forEach((s, i) => {
-      const label = isCustom ? s.trim() : emphasizeFirstWord(s)
-      const prefix = `${i + 1}.${bullet} `
-      const wrapped = wrapWords(label, LINE_WIDTH - prefix.length, SUGGESTION_MAX_LINES)
-      wrapped.forEach((ln, j) => {
-        lines.push(j === 0 ? `${prefix}${ln}` : `${' '.repeat(prefix.length)}${ln}`)
-      })
-    })
+    const reserved = new TextEncoder().encode([...lines, '', footer].join('\n')).length + 1
+    const budget = Math.max(0, GLASSES_CONTENT_MAX_BYTES - reserved)
+    lines.push(...fitTailByBytes(
+      wrapAnswerLines(currentAnswerText(), LINE_WIDTH),
+      budget,
+    ))
   } else {
-    lines.push('(suggestions appear here)')
+    lines.push('(answer appears here)')
   }
   lines.push('')
-  lines.push(mode.proactiveSupported ? '> 單擊 送出   > 雙擊 取消   > 戒指雙擊 話題' : '> 單擊 送出   > 雙擊 取消')
+  lines.push(footer)
   return lines.join('\n')
 }
 
@@ -849,6 +825,7 @@ async function runMockTick(): Promise<void> {
   const next = nextMockExchange(currentMode)
   lastTranscript = next.transcript
   suggestions = next.suggestions
+  liveSuggestionsEl.textContent = suggestions.join('\n')
   await paint()
 }
 
@@ -1014,7 +991,7 @@ async function runExtend(): Promise<void> {
       // 串流時保留原始全文（延伸內容不一定是編號清單）；JSON fallback 用解析結果
       const finalPart = result.streamed && lastAcc
         ? lastAcc
-        : result.suggestions.map((sg, i) => `${i + 1}. ${sg}`).join('\n')
+        : result.suggestions.join('\n')
       extendedText = prefix + finalPart
       liveSuggestionsEl.textContent = extendedText
     } else {
@@ -1217,16 +1194,16 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
       kbExtra: kbAttach[currentMode].extra && kbExtra ? kbExtra : undefined,
     }, {
       onDelta(accumulated) {
-        // 串流中：整段累積文字當單一建議顯示，結束後才切回條列
+        // 串流中：整段累積文字持續當作單一完整回答顯示
         suggestions = [accumulated]
         liveSuggestionsEl.textContent = accumulated
         glassesThrottle.push(() => { void paint() })
       },
     })
     if (result.ok) {
-      // 未決的串流渲染立即出清，再畫最終條列
+      // 未決的串流渲染立即出清，再畫最終完整回答
       glassesThrottle.flush()
-      liveSuggestionsEl.textContent = result.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')
+      liveSuggestionsEl.textContent = result.suggestions.join('\n')
       suggestions = result.suggestions
       // Track the new suggestions for next-call dedupe.
       for (const s of result.suggestions) {

@@ -49,7 +49,7 @@ describe('createTransport', () => {
       transcript: 'How was your day?',
     })
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.suggestions).toEqual(['First', 'Second', 'Third'])
+    if (r.ok) expect(r.suggestions).toEqual(['First\nSecond\nThird'])
     expect(fetchSpy).toHaveBeenCalledOnce()
     const [url, init] = fetchSpy.mock.calls[0]!
     expect(url).toBe('https://cue.example.workers.dev/suggest?stream=0')
@@ -276,28 +276,24 @@ describe('createTransport', () => {
     return new Response(body, { status: 200, headers: { 'Content-Type': contentType } })
   }
 
-  it('串流回應：onDelta 遞增累積、結束解析編號清單、streamed=true', async () => {
-    const fetchSpy = vi.fn(async (url: string) => {
-      expect(String(url)).toBe('https://cue.example.workers.dev/suggest?stream=1')
-      return streamResponse(['1. 先講', '結論。\n2. 帶關', '鍵數字。'])
-    })
+  it('串流回應：onDelta 遞增累積、結束保留單一完整答案、streamed=true', async () => {
+    const fetchSpy = vi.fn(async () => streamResponse([
+      '我認為這個轉變是從 READ ONLY ',
+      '走向 TAKE ACTION，核心是模型與工具整合。',
+    ]))
     globalThis.fetch = fetchSpy as unknown as typeof fetch
     const t = createTransport('https://cue.example.workers.dev', 'secret')
     const deltas: string[] = []
     const r = await t.requestSuggestionsStream(
-      { mode: 'work', transcript: '請自我介紹' },
+      { mode: 'work', transcript: '你怎麼看 AI Agent？' },
       { onDelta: acc => deltas.push(acc) },
     )
-    expect(deltas.length).toBeGreaterThanOrEqual(2)
-    expect(deltas[deltas.length - 1]).toBe('1. 先講結論。\n2. 帶關鍵數字。')
-    for (let i = 1; i < deltas.length; i += 1) {
-      expect(deltas[i]!.startsWith(deltas[i - 1]!)).toBe(true) // 遞增累積
-    }
-    expect(r.ok).toBe(true)
-    if (r.ok) {
-      expect(r.streamed).toBe(true)
-      expect(r.suggestions).toEqual(['先講結論。', '帶關鍵數字。'])
-    }
+    expect(deltas.at(-1)).toBe('我認為這個轉變是從 READ ONLY 走向 TAKE ACTION，核心是模型與工具整合。')
+    expect(r).toEqual({
+      ok: true,
+      streamed: true,
+      suggestions: ['我認為這個轉變是從 READ ONLY 走向 TAKE ACTION，核心是模型與工具整合。'],
+    })
   })
 
   it('回應是 application/json（舊 Worker）→ 不呼叫 onDelta，走舊格式', async () => {
@@ -315,8 +311,18 @@ describe('createTransport', () => {
     expect(r.ok).toBe(true)
     if (r.ok) {
       expect(r.streamed).toBe(false)
-      expect(r.suggestions).toEqual(['甲', '乙'])
+      expect(r.suggestions).toEqual(['甲\n乙'])
     }
+  })
+
+  it('空白串流回應 → ok:false', async () => {
+    globalThis.fetch = vi.fn(async () => streamResponse([' ', '\n'])) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const r = await t.requestSuggestionsStream(
+      { mode: 'work', transcript: 'hi' },
+      { onDelta: () => {} },
+    )
+    expect(r).toEqual({ ok: false, error: 'empty suggestion response' })
   })
 
   it('串流網路錯誤 → ok:false', async () => {

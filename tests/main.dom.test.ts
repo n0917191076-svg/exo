@@ -68,6 +68,21 @@ describe('Cue plugin DOM state machine', () => {
     expect(modal!.style.display).toBe('none')
   })
 
+  it('mock mode writes one unnumbered answer into the phone answer area', async () => {
+    await bootPlugin()
+    const holdToTalk = document.querySelector<HTMLButtonElement>('#hold-to-talk')!
+    const liveSuggestions = document.querySelector<HTMLDivElement>('#live-suggestions')!
+
+    holdToTalk.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 80))
+
+    expect(liveSuggestions.textContent).toContain('我是葉家佐')
+    expect(liveSuggestions.textContent).not.toMatch(/^\s*\d+[.)]\s/m)
+
+    holdToTalk.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 20))
+  })
+
   it('hides the privacy modal when an agreement is already stored', async () => {
     await bootPlugin({ storage: { 'cue:privacy-agreed:v1': '1' } })
     const modal = document.querySelector<HTMLDivElement>('#privacy-modal')

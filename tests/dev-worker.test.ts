@@ -69,7 +69,7 @@ describe('dev-worker.mjs HTTP contract', () => {
     })
     const workJson = await workRes.json()
     expect(workJson.ok).toBe(true)
-    expect(workJson.suggestions).toHaveLength(3)
+    expect(workJson.suggestions).toHaveLength(1)
 
     const dailyRes = await fetch(`${baseUrl}/suggest?stream=0`, {
       method: 'POST',
@@ -77,7 +77,7 @@ describe('dev-worker.mjs HTTP contract', () => {
       body: JSON.stringify({ mode: 'daily', transcript: '最近好嗎' }),
     })
     const dailyJson = await dailyRes.json()
-    expect(dailyJson.suggestions).toHaveLength(3)
+    expect(dailyJson.suggestions).toHaveLength(1)
     // work 與 daily fixtures 必須不同。
     expect(dailyJson.suggestions).not.toEqual(workJson.suggestions)
   })
@@ -90,11 +90,11 @@ describe('dev-worker.mjs HTTP contract', () => {
     })
     const json = await r.json()
     expect(json.ok).toBe(true)
-    expect(json.suggestions).toHaveLength(3)
+    expect(json.suggestions).toHaveLength(1)
   })
 
   // ─── Phase 3: 預設串流純文字（模擬 Worker 的 chunked 轉發） ──────
-  it('POST /suggest（預設）以 text/plain 串流出 3 條編號建議', async () => {
+  it('POST /suggest（預設）以 text/plain 串流出一個未編號完整回答', async () => {
     const r = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { Authorization: 'Bearer dev', 'Content-Type': 'application/json' },
@@ -103,8 +103,8 @@ describe('dev-worker.mjs HTTP contract', () => {
     expect(r.status).toBe(200)
     expect(r.headers.get('content-type') ?? '').toContain('text/plain')
     const text = await r.text()
-    const numbered = text.split('\n').filter(l => /^\d+\.\s/.test(l.trim()))
-    expect(numbered).toHaveLength(3)
+    expect(text.trim().length).toBeGreaterThan(40)
+    expect(text).not.toMatch(/^\s*\d+[.)]\s/m)
   })
 
   it('OPTIONS preflight returns 204 with permissive CORS headers', async () => {
@@ -141,10 +141,13 @@ describe('createTransport against the real dev-worker', () => {
     expect(Array.isArray(captured!.utterances)).toBe(true)
   })
 
-  it('requestSuggestions returns a 3-tuple from the real /suggest', async () => {
+  it('requestSuggestions returns one joined answer from the real /suggest', async () => {
     const t = createTransport(baseUrl, 'dev')
     const r = await t.requestSuggestions({ mode: 'date', transcript: 'how was your day' })
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.suggestions).toHaveLength(3)
+    if (r.ok) {
+      expect(r.suggestions).toHaveLength(1)
+      expect(r.suggestions[0]!.length).toBeGreaterThan(40)
+    }
   })
 })

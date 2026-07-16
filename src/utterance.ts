@@ -149,6 +149,49 @@ export function wrapWords(text: string, width: number, maxLines: number): string
   return out
 }
 
+/**
+ * Wrap a complete answer for the glasses display without discarding text.
+ * Existing paragraph breaks are preserved, including one blank separator.
+ */
+export function wrapAnswerLines(text: string, width: number): string[] {
+  if (width <= 0) return []
+  const lines: string[] = []
+
+  for (const raw of text.split(/\r?\n/)) {
+    let rest = raw.trim()
+    if (!rest) {
+      if (lines.length > 0 && lines.at(-1) !== '') lines.push('')
+      continue
+    }
+    while (rest.length > width) {
+      const candidate = rest.slice(0, width + 1)
+      const boundary = candidate.lastIndexOf(' ')
+      let cut = boundary > 0 ? boundary : width
+      if (boundary > 0) {
+        // Keep adjacent uppercase terms such as READ ONLY / TAKE ACTION
+        // together when moving the first term to the next line will fit both.
+        const beforeBoundary = rest.slice(0, boundary).trimEnd()
+        const previousBoundary = beforeBoundary.lastIndexOf(' ')
+        const leftTerm = beforeBoundary.slice(previousBoundary + 1)
+        const rightTerm = /^[A-Z][A-Z0-9-]*(?![A-Za-z0-9-])/.exec(rest.slice(boundary + 1))?.[0]
+        if (
+          previousBoundary > 0
+          && /^[A-Z][A-Z0-9-]*$/.test(leftTerm)
+          && rightTerm
+          && leftTerm.length + 1 + rightTerm.length <= width
+        ) {
+          cut = previousBoundary
+        }
+      }
+      lines.push(rest.slice(0, cut).trimEnd())
+      rest = rest.slice(cut).trimStart()
+    }
+    if (rest) lines.push(rest)
+  }
+
+  return lines
+}
+
 // --- conversation accumulation (v0.4.0) ---
 //
 // Per-speaker rolling buffer for transcript display. Same-speaker turns
@@ -230,9 +273,9 @@ export function batteryHeaderSuffix(level: number | undefined): string {
 // ── Phase 3：串流顯示的純函式 ──────────────────────────────────────
 
 /**
- * 把「1. 甲\n2) 乙」解析成 ['甲','乙']。與 Worker 端 parseNumberedList
- * 同邏輯：只留編號行、容忍 LLM 前言雜訊；完全沒有編號行時整段當一條。
- * 串流結束後用來把累積全文切回建議陣列。
+ * 把「1. 甲\n2) 乙」解析成 ['甲','乙']。只留編號行、容忍 LLM
+ * 前言雜訊；完全沒有編號行時整段當一條。保留給舊測試與工具使用，
+ * production /suggest 路徑已改用 singleAnswerFromText。
  */
 export function parseNumberedList(text: string): string[] {
   if (text.trim().length === 0) return []
@@ -243,6 +286,21 @@ export function parseNumberedList(text: string): string[] {
     if (m && m[1]) out.push(m[1].trim())
   }
   return out.length > 0 ? out : [text.trim()]
+}
+
+export function singleAnswerFromText(text: string): string[] {
+  const answer = text.trim()
+  return answer ? [answer] : []
+}
+
+export function normalizeSuggestionArray(items: string[]): string[] {
+  return singleAnswerFromText(
+    items
+      .filter(item => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .join('\n'),
+  )
 }
 
 // ── 眼鏡渲染的位元組預算 ────────────────────────────────────────────

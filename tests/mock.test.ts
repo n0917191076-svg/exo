@@ -11,6 +11,7 @@ describe('mock driver', () => {
       const ex = nextMockExchange(mode.id)
       expect(ex.transcript.length).toBeGreaterThan(5)
       expect(ex.suggestions.length).toBeGreaterThan(0)
+      expect(ex.suggestions).toHaveLength(1)
       for (const s of ex.suggestions) {
         expect(typeof s).toBe('string')
         expect(s.length).toBeGreaterThan(2)
