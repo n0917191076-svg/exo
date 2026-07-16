@@ -64,7 +64,7 @@ import {
   type ModelChoice,
 } from './storage'
 import { createTransport, setTransportLogger, type CueFetchLog, type CueTransport, type DialogTurn, type TranscriptEvent } from './transport'
-import { downscaleImage, type DownscaledImage } from './imaging'
+import { downscaleFromBase64, downscaleImage, type DownscaledImage } from './imaging'
 import { PROACTIVE_SILENT_MS, gestureMapFor, type TriggerEvent } from './triggers'
 import { Vad } from './vad'
 import {
@@ -272,9 +272,12 @@ root.innerHTML = `
       <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">圖片問答（拍照／選圖）</h2>
       <p style="color: #7b7b7b; font-size: .85em; margin: 0 0 .5rem 0;">上傳一張照片即可——AI 會自己辨識圖中的題目/問題並直接作答（縮圖後上傳，長邊 ≤1568）。</p>
       <div style="display: flex; gap: .5rem; align-items: center; max-width: 520px; flex-wrap: wrap;">
+        <button id="vision-camera" type="button" style="padding: .45rem .7rem; cursor: pointer;">📷 拍照</button>
+        <button id="vision-album" type="button" style="padding: .45rem .7rem; cursor: pointer;">🖼 選圖</button>
         <input id="vision-file" type="file" accept="image/*" />
         <button id="vision-send" type="button" disabled style="padding: .45rem .9rem; cursor: pointer;">問這張圖</button>
       </div>
+      <p style="color: #9b9b9b; font-size: .8em; margin: .3rem 0 0 0;">📷/🖼 用眼鏡 App 的原生相機/相簿；瀏覽器請用「選擇檔案」。</p>
       <img id="vision-preview" alt="預覽" style="display: none; margin-top: .5rem; max-width: 240px; max-height: 240px; border-radius: 4px; border: 1px solid #ccc;" />
     </section>
 
@@ -558,6 +561,28 @@ visionFile.addEventListener('change', async () => {
   }
 })
 visionSend.addEventListener('click', () => { void runVisionQuery() })
+
+// Phase 7：原生相機/相簿（僅眼鏡 App 內有 bridge；瀏覽器用檔案上傳）。
+async function nativePickImage(kind: 'camera' | 'album'): Promise<void> {
+  if (!even) {
+    liveSuggestionsEl.textContent = '（拍照/選圖需在眼鏡 App 內使用；瀏覽器請用「選擇檔案」）'
+    return
+  }
+  try {
+    const asset = kind === 'camera'
+      ? await even.captureImageFromCamera()
+      : await even.pickImageFromAlbum()
+    if (!asset || !asset.base64) return // 使用者取消或無資料
+    pendingImage = await downscaleFromBase64(asset.base64, asset.mimeType)
+    visionPreview.src = pendingImage.dataUrl
+    visionPreview.style.display = 'block'
+    visionSend.disabled = false
+  } catch (err) {
+    liveSuggestionsEl.textContent = `（取圖失敗：${err instanceof Error ? err.message : String(err)}）`
+  }
+}
+document.querySelector<HTMLButtonElement>('#vision-camera')!.addEventListener('click', () => { void nativePickImage('camera') })
+document.querySelector<HTMLButtonElement>('#vision-album')!.addEventListener('click', () => { void nativePickImage('album') })
 
 // Phase 4：手機大按鈕（phone-button TriggerSource）— 按住收音、放開送出、
 // 滑出取消。可盲按：狀態靠底色與文字反映。

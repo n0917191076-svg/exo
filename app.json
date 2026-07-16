@@ -21,6 +21,14 @@
       "whitelist": [
         "https://cue-worker.jiazuo.workers.dev"
       ]
+    },
+    {
+      "name": "camera",
+      "desc": "「圖片問答」拍照時使用相機：拍下題目或畫面，縮圖後送到你個人的 Worker 由 AI 辨識作答，不儲存原圖。"
+    },
+    {
+      "name": "album",
+      "desc": "「圖片問答」選圖時讀取相簿中你選的單張照片：縮圖後送到你個人的 Worker 由 AI 辨識作答，不儲存原圖。"
     }
   ],
   "supported_languages": [

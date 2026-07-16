@@ -30,3 +30,15 @@ export async function downscaleImage(
   const base64 = dataUrl.split(',')[1] ?? ''
   return { base64, mediaType: 'image/jpeg', dataUrl, width, height }
 }
+
+// 原生相簿/相機回的是 base64（AppImageAsset），轉 Blob 後走同一條縮圖路徑。
+export async function downscaleFromBase64(
+  base64: string,
+  mimeType: string,
+  maxEdge = 1568,
+  quality = 0.8,
+): Promise<DownscaledImage> {
+  const resp = await fetch(`data:${mimeType || 'image/jpeg'};base64,${base64}`)
+  const blob = await resp.blob()
+  return downscaleImage(blob, maxEdge, quality)
+}

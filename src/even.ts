@@ -45,6 +45,15 @@ export interface EvenRuntime {
   // Cheap to call repeatedly — uses the latest cached push value when
   // available, falls back to a synchronous getDeviceInfo poll otherwise.
   getBatteryLevel: () => Promise<number | undefined>
+  // Phase 7：原生相簿/相機（SDK ≥0.0.12）。回精簡的 {base64,mimeType}，
+  // 與 SDK 型別解耦。失敗或取消回 null。實機權限彈窗行為待驗證。
+  pickImageFromAlbum: () => Promise<EvenImageAsset | null>
+  captureImageFromCamera: () => Promise<EvenImageAsset | null>
+}
+
+export interface EvenImageAsset {
+  base64: string
+  mimeType: string
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -209,6 +218,18 @@ export async function connectEvenRuntime(initial: string): Promise<EvenRuntime |
       } catch {
         return undefined
       }
+    },
+    async pickImageFromAlbum() {
+      try {
+        const a = await bridge.pickImageFromAlbum()
+        return a && a.base64 ? { base64: a.base64, mimeType: a.mimeType || 'image/jpeg' } : null
+      } catch { return null }
+    },
+    async captureImageFromCamera() {
+      try {
+        const a = await bridge.captureImageFromCamera()
+        return a && a.base64 ? { base64: a.base64, mimeType: a.mimeType || 'image/jpeg' } : null
+      } catch { return null }
     },
   }
 }
