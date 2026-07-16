@@ -34,12 +34,15 @@ describe('mode registry', () => {
     }
   })
 
-  it('work 模式吸收 interview 技巧：禁 hedging 語 + STAR 僅自然時使用', () => {
+  it('work 模式語氣：口語、有料、禁沒把握口頭禪、偶爾英文術語、不公式化', () => {
     const p = modeById('work').systemPrompt
-    expect(p).toMatch(/我覺得/)   // 禁用語需點名列出，LLM 才躲得掉
+    expect(p).toMatch(/口語/)                 // 口語化
+    expect(p).toMatch(/有料|有內容|有觀點/)     // 內容要有料
+    expect(p).toMatch(/生硬|書面語/)           // 避免一般人不用的生硬詞
+    expect(p).toMatch(/英文專有名詞|英文術語/)  // 偶爾穿插英文顯專業
+    expect(p).toMatch(/我覺得/)                // 仍禁沒把握口頭禪（需點名 LLM 才躲得掉）
     expect(p).toMatch(/可能/)
-    expect(p).toMatch(/情境.*任務.*行動.*結果|STAR/)
-    expect(p).toMatch(/自然/)     // 「僅在自然時使用」的限定
+    expect(p).not.toMatch(/STAR/)              // 拿掉公式化框架
   })
 
   it('非 custom 模式的 systemPrompt 是繁中且含單一完整回答規則', () => {
