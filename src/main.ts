@@ -258,6 +258,15 @@ root.innerHTML = `
       <div id="live-suggestions" style="max-width: 520px; min-height: 3.5em; padding: .5rem; background: #101010; color: #7CFC00; font-family: ui-monospace, monospace; font-size: .9em; white-space: pre-wrap; border-radius: 4px;">（收音中這裡會逐字顯示建議）</div>
     </section>
 
+    <section>
+      <h2 style="font-size: 1.1em; margin: 1rem 0 .5rem 0;">打字直答（solve）</h2>
+      <p style="color: #7b7b7b; font-size: .85em; margin: 0 0 .5rem 0;">直接打字問，AI 把答案顯示在上方與眼鏡（用 solve 直答格式，接得上對話記憶）。</p>
+      <div style="display: flex; gap: .5rem; max-width: 520px;">
+        <input id="solve-input" type="text" placeholder="輸入問題，Enter 送出…" style="flex: 1; padding: .45rem; border-radius: 4px; border: 1px solid #bbb;" />
+        <button id="solve-send" type="button" style="padding: .45rem .9rem; cursor: pointer;">送出</button>
+      </div>
+    </section>
+
     <div id="privacy-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 100;">
       <div style="background: #fff; max-width: 520px; padding: 1.5rem; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.3);">
         <h2 style="margin: 0 0 .5rem 0;">Before you start</h2>
@@ -506,6 +515,17 @@ const wearerStatus = document.querySelector<HTMLParagraphElement>('#wearer-statu
 const calibrateBtn = document.querySelector<HTMLButtonElement>('#calibrate-me')!
 const calibrateStatus = document.querySelector<HTMLParagraphElement>('#calibrate-status')!
 const liveSuggestionsEl = document.querySelector<HTMLDivElement>('#live-suggestions')!
+const solveInput = document.querySelector<HTMLInputElement>('#solve-input')!
+const solveSend = document.querySelector<HTMLButtonElement>('#solve-send')!
+function submitSolveText(): void {
+  const q = solveInput.value
+  solveInput.value = ''
+  void runSolveTextQuery(q)
+}
+solveSend.addEventListener('click', submitSolveText)
+solveInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); submitSolveText() }
+})
 
 // Phase 4：手機大按鈕（phone-button TriggerSource）— 按住收音、放開送出、
 // 滑出取消。可盲按：狀態靠底色與文字反映。
@@ -1269,6 +1289,54 @@ function pushDialogTurn(them: string, me: string): void {
   dialogHistory.push({ them: t, me: m })
   while (dialogHistory.length > DIALOG_HISTORY_CAP) dialogHistory.shift()
   lastExchangeAt = Date.now()
+}
+
+// Phase 7：打字直答 — 不用收音，直接打字問。一律用 solve 直答格式（獨立於
+// 眼鏡收音選的模式），串流到手機 #live-suggestions 與眼鏡答案視圖，並接對話記憶。
+async function runSolveTextQuery(question: string): Promise<void> {
+  const q = question.trim()
+  if (!q) return
+  if (!transport || !isRealMode) {
+    liveSuggestionsEl.textContent = '（打字直答需先在下方設定 Worker URL 與 token）'
+    return
+  }
+  if (suggestionInFlight || extendInFlight) return
+  suggestionInFlight = true
+  try {
+    maybeResetHistoryOnIdle(Date.now())
+    extendedText = '' // 清掉延伸殘留，讓這題成為新答案
+    liveSuggestionsEl.textContent = '…'
+    const result = await transport.requestSuggestionsStream({
+      mode: 'solve',
+      transcript: q,
+      recentSuggestions: recentSuggestionsRing.slice(),
+      history: dialogHistory.slice(),
+      sceneNote,
+      model: modelChoice,
+      length: answerLength,
+      lang: langMode,
+      kbPersonal: kbAttach.solve.personal && kbPersonal ? kbPersonal : undefined,
+      kbExtra: kbAttach.solve.extra && kbExtra ? kbExtra : undefined,
+    }, {
+      onDelta(accumulated) {
+        suggestions = [accumulated]
+        liveSuggestionsEl.textContent = accumulated
+        glassesThrottle.push(() => { void paint() })
+      },
+    })
+    if (result.ok) {
+      glassesThrottle.flush()
+      liveSuggestionsEl.textContent = result.suggestions.join('\n')
+      suggestions = result.suggestions
+      pushDialogTurn(q, result.suggestions.join('\n'))
+    } else {
+      liveSuggestionsEl.textContent = `(LLM error: ${result.error.slice(0, 60)})`
+      suggestions = []
+    }
+    await paint()
+  } finally {
+    suggestionInFlight = false
+  }
 }
 
 // Phase 4：手勢 → 語意事件走 gestureMapFor 純函式（模式作用域的單一
