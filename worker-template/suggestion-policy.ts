@@ -12,7 +12,7 @@ export interface SuggestPromptInput {
   extendContext?: string
 }
 
-const BASE_PROMPTS: Record<'work' | 'daily' | 'custom', string> = {
+const BASE_PROMPTS: Record<'work' | 'daily' | 'custom' | 'solve', string> = {
   work:
     '你是使用者的即時對話助手。逐字稿是對方剛說的話，請替使用者形成下一段可直接說出口的回答。' +
     '情境是工作場合（面試、會議、簡報）：講話口語、像正常人在對話，不要書面語或一般人平常不會用的生硬字詞；' +
@@ -24,7 +24,20 @@ const BASE_PROMPTS: Record<'work' | 'daily' | 'custom', string> = {
     '情境是日常交談，語氣自然、口語、像真人聊天，但仍要回答實質內容，不用空泛附和。',
   custom:
     '你是使用者的即時對話助手。逐字稿是對方剛說的話，請形成一段可直接說出口、內容完整的回答。',
+  solve:
+    '你是使用者的即時解題助手。逐字稿是使用者本人剛說出的問題，請直接把答案講出來、讓使用者能照著念；不是建議怎麼回話。',
 }
+
+// solve（直答）專用契約：答案先行、可多行，語意與對話模式相反。
+const SOLVE_CONTRACT = `
+
+【回答契約】
+第一行就是答案或結論，直接給出，不要前言、不要重述問題。
+之後最多 2–3 行補關鍵步驟或理由，每行簡短、可照著念。
+程式或數學題：先給最終答案，再給關鍵思路，不逐行列出程式碼。
+可以使用通用專業知識。假設案例必須明確使用「例如」標示。
+只有逐字稿、目前場景或知識庫明確提供時，才可聲稱我、我們或公司做過、驗證過或達成某結果；不得虛構經歷、成果、百分比或其他具體數字。
+資料不足時說明前提或條件，不得虛構。`
 
 const COMMON_CONTRACT = `
 
@@ -52,12 +65,28 @@ const LENGTH_RULES: Record<string, { zh: string; en: string }> = {
   },
 }
 
+// solve 長度：字數上限沿用（對齊眼鏡單一視窗），但允許「答案行＋數行說明」的多行結構。
+const SOLVE_LENGTH_RULES: Record<string, { zh: string; en: string }> = {
+  short: {
+    zh: '全文（含所有行）以 40–70 個中文字為目標，硬性上限 70 字。答案行後最多再補 2 行說明。',
+    en: 'The whole answer targets 20–30 words, hard maximum 30. The answer line plus at most two short lines.',
+  },
+  medium: {
+    zh: '全文（含所有行）以 80–110 個中文字為目標，硬性上限 110 字。答案行後最多再補 3 行說明。',
+    en: 'The whole answer targets 35–50 words, hard maximum 50. The answer line plus at most three short lines.',
+  },
+  long: {
+    zh: '全文（含所有行）以 110–140 個中文字為目標，硬性上限 140 字。答案行後最多再補 3 行說明。',
+    en: 'The whole answer targets 50–70 words, hard maximum 70. The answer line plus at most three short lines.',
+  },
+}
+
 function tailTruncate(value: string, max: number): string {
   return value.length > max ? value.slice(value.length - max) : value
 }
 
-function normalizedMode(mode?: string): 'work' | 'daily' | 'custom' {
-  if (mode === 'daily' || mode === 'custom') return mode
+function normalizedMode(mode?: string): 'work' | 'daily' | 'custom' | 'solve' {
+  if (mode === 'daily' || mode === 'custom' || mode === 'solve') return mode
   return 'work'
 }
 
@@ -80,10 +109,16 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
   const extend = input.extendContext?.trim()
     ? `\n\n【延伸要求】\n請在以下回答基礎上接續深入，不要重複已說內容：\n${input.extendContext.trim()}`
     : ''
-  const length = LENGTH_RULES[input.length ?? 'medium'] ?? LENGTH_RULES.medium!
-  const lengthBlock = `\n\n【長度】${lang === 'en' ? length.en : length.zh}`
+  // solve（直答）走自己的契約與長度；其餘模式走對話單一答案契約。
+  const isSolve = mode === 'solve'
+  const contract = isSolve ? SOLVE_CONTRACT : COMMON_CONTRACT
+  const lengthRule = (isSolve ? SOLVE_LENGTH_RULES : LENGTH_RULES)[input.length ?? 'medium']
+    ?? (isSolve ? SOLVE_LENGTH_RULES.medium! : LENGTH_RULES.medium!)
+  const lengthBlock = `\n\n【長度】${lang === 'en' ? lengthRule.en : lengthRule.zh}`
   const language = lang === 'en'
-    ? '\n\n【英文格式】第一行必須是「譯：<對方那句話的中文翻譯>」。空一行後，只輸出一個完整英文回答；使用 CEFR B1 以內詞彙與句型。'
+    ? (isSolve
+        ? '\n\n【英文格式】用英文作答，CEFR B1 以內；第一行就是答案。'
+        : '\n\n【英文格式】第一行必須是「譯：<對方那句話的中文翻譯>」。空一行後，只輸出一個完整英文回答；使用 CEFR B1 以內詞彙與句型。')
     : ''
   const recent = (input.recentSuggestions ?? [])
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
@@ -94,7 +129,7 @@ export function buildSuggestPrompt(input: SuggestPromptInput): {
 
   return {
     lang,
-    systemPrompt: base + scene + kb + extend + COMMON_CONTRACT + lengthBlock + language + dedupe,
+    systemPrompt: base + scene + kb + extend + contract + lengthBlock + language + dedupe,
   }
 }
 

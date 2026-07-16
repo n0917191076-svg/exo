@@ -93,6 +93,26 @@ describe('single-answer Worker prompt policy', () => {
   })
 })
 
+describe('solve（直答）prompt policy', () => {
+  it('語意翻轉：直接答問題、答案先行、不是建議怎麼回話', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'solve', lang: 'zh', length: 'medium' })
+    expect(systemPrompt).toMatch(/使用者本人.*問題|直接把答案/)
+    expect(systemPrompt).toMatch(/第一行就是答案/)
+    expect(systemPrompt).not.toMatch(/只輸出一個完整答案/) // 不套對話模式契約
+  })
+  it('沿用事實政策與字數上限（對齊眼鏡窗）', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'solve', lang: 'zh', length: 'medium' })
+    expect(systemPrompt).toMatch(/不得虛構/)
+    expect(systemPrompt).toContain('硬性上限 110 字')
+    expect(systemPrompt).toMatch(/答案行後最多再補 3 行/)
+  })
+  it('英文 solve：第一行就是答案、不走「譯：」格式', () => {
+    const { systemPrompt } = buildSuggestPrompt({ mode: 'solve', lang: 'en', length: 'short' })
+    expect(systemPrompt).toMatch(/用英文作答/)
+    expect(systemPrompt).not.toMatch(/譯：/)
+  })
+})
+
 describe('Worker single-answer normalization', () => {
   it('keeps all model text as one answer even if it contains numbered lines', () => {
     expect(singleAnswerFromText('1. 第一段\n2. 第二段')).toEqual(['1. 第一段\n2. 第二段'])
