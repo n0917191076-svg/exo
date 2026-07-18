@@ -119,6 +119,20 @@
 
 **延伸（extend，承 Phase 4）**：回答顯示中雙擊＝在**該段完整答案**基礎上接續深入、不重複（base 從舊「多條建議 join」改為單一答案全文）。
 
+## 進度記錄（實機驗收）
+
+> 最近一次實機驗收：**2026-07-18，Evan 於 Even G2 實機通過**。以下為已完成並驗收的功能，測試基準 **268 tests 全綠**。
+
+- **Phase 0/1/2 完成**：環境驗證、中文化與核心設定（Deepgram nova-3 zh-TW、模式 work/daily/custom、場景說明、模型/長度/語言選擇）、知識庫。
+- **Phase 3 完成**：Anthropic/OpenAI 串流逐字上屏、300ms 節流。
+- **Phase 4 收音觸發鏈實機驗收通過**（本產品核心）：閘門收音、四種觸發來源、單一答案輸出契約。本階段近期修掉三類實機問題：
+  1. **極短語音修正**：`flush(force)` 尾端補 1.5s 靜音 PCM 並繞過 `MIN_CHUNK_BYTES`（`transport.ts`）；Deepgram nova-3 對 <1.5s 常回空的緩解。
+  2. **不可靜默失敗**：`producedText=false`／錯誤路徑一律有 UI 回饋（「沒聽清楚，再說一次」／可行動錯誤文案）；上游錯誤（如 OpenAI `insufficient_quota`）透傳到前端顯示「OpenAI 額度不足」而非「http400」。
+  3. **gate-stop inFlight race 修正**（關鍵）：`endMicSession` 先排空在飛的 `/transcribe` 再判 `producedText`，消除「dg:ok 卻顯示沒聽清楚」與「下一句疊加上一句」——詳見疑難排解表。
+- **UI 狀態機**：`idle→listening→processing→(answer|no-speech|error|timeout)→idle`，gate-stop 當下即顯示「處理中…」，15s 兜底 timer 保證離開 processing（`main.ts`）。
+- **Debug Console**（開發診斷）：手機設定頁 per-session 生命週期面板，由 diagnostic overlay 開關控制；一次收音一筆 trace（收音／transcribe 逐字稿／suggest／LLM／最終狀態），錯誤含上游原文。
+- **待辦**：keep-warm（`MIC_KEEP_WARM_MS=12s`，消除冷麥暖機延遲）——已設計＋核准，待 `t1st` 診斷數據確認後實作；Phase 5–8 收尾與獨立網頁版依原順序推進。
+
 ## 開發階段（嚴格照順序，每階段驗收後才進下一階段）
 
 ### Phase 0 — 環境驗證（不寫新功能）
@@ -242,6 +256,7 @@ interface PlatformAdapter {
 - 拿不準 SDK 行為時：先查官方文件與模板，不要憑記憶編 API。
 - 需要實機才能驗證的事（BLE 穩定性、實際收音品質、媒體鍵事件），明確列出「請 Evan 實機測試」清單，不要假裝已驗證。
 - 隱私功能是產品需求不是裝飾：**麥克風預設 OFF、首次使用同意畫面、收音中指示永遠可見**，不得移除。
+- **不可靜默失敗**：使用者主動操作（收音、送出、拍照、打字問）後的任何 early return 或錯誤路徑，**都必須有 UI 回饋（眼鏡＋手機）或至少一筆 diagnostic log**，不得 silent return 讓畫面毫無反應。純併發保護（`inFlight` 類）與空輸入（trim 後為空）可豁免，但仍建議留 log。典型反例：極短語音 Deepgram 回空 transcript 時直接 return——已修為顯示「沒聽清楚，再說一次」。
 
 ## 疑難排解（先查這裡再上網）
 
@@ -250,6 +265,9 @@ interface PlatformAdapter {
 | plugin fetch Worker 失敗 | `app.json` whitelist 沒列該 host、或列了佔位網址。列出完整 `https://xxx.workers.dev` |
 | `audioControl(true)` 回傳成功但沒聲音 | 回傳值不可信；以「是否持續收到 audio PCM frames」為準（Cue 已有計數邏輯） |
 | 眼鏡顯示後 BLE 斷線 | 渲染沒走 `enqueue()` 或頻率太高；檢查節流 ≥300ms |
+| gate-stop 後顯示「沒聽清楚」但 Debug Console 顯示 dg:ok＋逐字稿正確 | **inFlight race**：>2.5s 的句子在 2.5s 觸發 active flush（inFlight），gate-stop 時 `endMicSession` 若沒等在飛塊就讀 `producedText`＝false→誤判 no-speech；在飛塊晚回時 `onTranscriptCb` 已 null／被下一 session 覆寫→文字丟失或疊加到下一句。**解法**：`endMicSession` 必先 `await inFlightPromise`（等轉寫結果回來）再 `await flush(true)` 送尾端，最後才讀 `producedText`。flush 須維護可 await 的 `inFlightPromise`（在飛時回傳它、非 no-op return）。判斷絕不可搶在轉寫結果之前。 |
+| 短句（<2s）要講 4-5 秒才有反應 | 兩因：①`flush(force)` 尾端不足 0.5s 被 MIN_CHUNK 擋掉＋Deepgram 對極短音回空→已加 1.5s 靜音 padding＋force 繞過門檻；②audioControl 冷麥暖機延遲吃掉起始（診斷看 Debug Console 的 `t1st`，>800ms＝暖機；解法 keep-warm，待驗證）|
+| 短句沒反應也沒提示（靜默） | 不可靜默失敗：`producedText=false` 必顯示「沒聽清楚，再說一次」；任何 early return/錯誤路徑都要 UI 回饋或 diagnostic |
 | WebSocket 連不上 | 平台限制，放棄，用 HTTP |
 | Deepgram 中文亂碼/空白 | 檢查 `language=zh-TW`、`encoding=linear16&sample_rate=16000`、WAV 包裝是否沿用原函式 |
 | Anthropic 401/403 | Worker secret 沒設或打錯：`wrangler secret put ANTHROPIC_API_KEY` 重設 |

@@ -126,6 +126,20 @@ let cachedBatteryLevel: number | undefined
 // Cleared when the user manually re-engages the mic.
 let autoPausedReason = ''
 
+// 反應式收音的 UI 狀態機（眼鏡 mic-off 顯示的單一真相）：
+//   idle → listening → processing → (answer | no-speech | error | timeout) → idle
+// 不變式：processing 一定會離開——15s 兜底 timer 保證，任何離開都清 timer。
+type UiPhase = 'idle' | 'listening' | 'processing' | 'answer' | 'no-speech' | 'error' | 'timeout'
+let uiPhase: UiPhase = 'idle'
+let phaseErrorText = ''            // error 狀態的可行動訊息
+let processingTimer: ReturnType<typeof setTimeout> | null = null
+
+// 集中文案與逾時常數（狀態機唯一來源）
+const PROCESSING_TEXT = '處理中…'
+const NO_SPEECH_TEXT = '沒聽清楚，再說一次'
+const TIMEOUT_TEXT = '連線逾時，再試一次'
+const PROCESSING_TIMEOUT_MS = 15_000
+
 // v0.4.0 settings — hydrated from storage on bootstrap.
 let showDebugOverlay = false  // diagnostic stats line on glasses
 let wearerSpeakerId = DEFAULT_WEARER_SPEAKER_ID  // -1 = none / no filter
@@ -202,6 +216,151 @@ function pushFetchLog(entry: CueFetchLog): void {
   fetchLog.unshift(entry)
   if (fetchLog.length > FETCH_LOG_CAP) fetchLog.length = FETCH_LOG_CAP
   renderFetchLog()
+  // Debug Console：把 transcribe 這筆歸集到當前 session trace（含逐字稿全文）。
+  if (entry.kind === 'transcribe' && currentTrace) {
+    currentTrace.transcribe.push({
+      ts: entry.ts,
+      bytes: entry.bytes ?? 0,
+      ms: entry.ms,
+      status: entry.ok ? (entry.transcript ? 'ok' : 'empty') : `err${entry.status ?? 'NET'}`,
+      transcript: entry.transcript ?? '',
+      error: entry.error,
+    })
+    renderDebugConsole()
+  }
+}
+
+// ── Debug Console：per-session 生命週期追蹤（記憶體、不落地、不上傳）──
+// 一次 gate-start→結果＝一筆 SessionTrace，聚合收音／transcribe／suggest／最終狀態。
+const DEBUG_TRACE_CAP = 20
+interface TranscribeLeg { ts: number; bytes: number; ms: number; status: string; transcript: string; error?: string }
+interface SessionTrace {
+  id: number
+  startedAt: number
+  startStats: { bytes: number; chunks: number } | null
+  capture?: { seconds: number; bytes: number; chunks: number }
+  transcribe: TranscribeLeg[]
+  suggestSent?: { ts: number; provider: string; model: string; hasKB: boolean; scene: boolean; historyTurns: number; transcript: string }
+  suggestResult?: { totalMs: number; firstByteMs: number; ok: boolean; answer: string; error?: string }
+  finalPhase?: UiPhase
+  finalText?: string
+}
+let traceSeq = 0
+const traces: SessionTrace[] = []
+let currentTrace: SessionTrace | null = null
+let suggestSentAt = 0
+let suggestFirstByteAt = 0
+
+function beginTrace(): void {
+  const s = transport?.stats()
+  currentTrace = {
+    id: ++traceSeq,
+    startedAt: Date.now(),
+    startStats: s ? { bytes: s.bytesReceived, chunks: s.chunksFlushed } : null,
+    transcribe: [],
+  }
+  traces.unshift(currentTrace)
+  if (traces.length > DEBUG_TRACE_CAP) traces.length = DEBUG_TRACE_CAP
+  renderDebugConsole()
+}
+function traceCapture(): void {
+  if (!currentTrace) return
+  const s = transport?.stats()
+  if (s && currentTrace.startStats) {
+    const bytes = Math.max(0, s.bytesReceived - currentTrace.startStats.bytes)
+    currentTrace.capture = {
+      seconds: +(bytes / 32000).toFixed(1),
+      bytes,
+      chunks: Math.max(0, s.chunksFlushed - currentTrace.startStats.chunks),
+    }
+  }
+  renderDebugConsole()
+}
+function traceSuggestSent(transcript: string): void {
+  if (!currentTrace) return
+  suggestSentAt = Date.now()
+  suggestFirstByteAt = 0
+  const provider = /^(gpt|o1|o3)/i.test(modelChoice) ? 'OpenAI' : 'Anthropic'
+  const hasKB = !!((kbAttach[currentMode]?.personal && kbPersonal) || (kbAttach[currentMode]?.extra && kbExtra))
+  currentTrace.suggestSent = {
+    ts: suggestSentAt, provider, model: modelChoice, hasKB,
+    scene: !!sceneNote, historyTurns: dialogHistory.length, transcript,
+  }
+  renderDebugConsole()
+}
+function traceSuggestFirstByte(): void {
+  if (suggestFirstByteAt === 0) suggestFirstByteAt = Date.now()
+}
+function traceSuggestResult(ok: boolean, answer: string, error?: string): void {
+  if (!currentTrace) return
+  currentTrace.suggestResult = {
+    totalMs: suggestSentAt ? Date.now() - suggestSentAt : 0,
+    firstByteMs: suggestFirstByteAt && suggestSentAt ? suggestFirstByteAt - suggestSentAt : -1,
+    ok, answer, error,
+  }
+  renderDebugConsole()
+}
+function traceFinal(phase: UiPhase, text: string): void {
+  if (!currentTrace) return
+  currentTrace.finalPhase = phase
+  currentTrace.finalText = text
+  renderDebugConsole()
+}
+
+function phaseBadge(phase: UiPhase | undefined): string {
+  const map: Record<string, [string, string]> = {
+    answer: ['#2a2', 'answer'],
+    'no-speech': ['#999', 'no-speech'],
+    error: ['#c00', 'error'],
+    timeout: ['#c00', 'timeout'],
+  }
+  const [color, label] = map[phase ?? ''] ?? ['#7b7b7b', phase ?? '進行中']
+  return `<span style="color: ${color}; font-weight: 600;">${label}</span>`
+}
+
+function renderDebugConsole(): void {
+  if (!debugConsoleEl) return
+  debugConsoleSection && (debugConsoleSection.style.display = showDebugOverlay ? 'block' : 'none')
+  if (traces.length === 0) {
+    debugConsoleEl.innerHTML = '<div style="color: #7b7b7b;">尚無記錄。單擊收音跑一輪，這裡會顯示完整生命週期。</div>'
+    return
+  }
+  debugConsoleEl.innerHTML = traces.map(t => {
+    const dg = t.transcribe.map(l => `${l.status}${l.transcript ? `"${l.transcript}"` : ''}`).join(' · ') || '—'
+    const cap = t.capture ? `${t.capture.seconds}s/${t.capture.chunks}塊` : '—'
+    const llm = t.suggestResult
+      ? (t.suggestResult.ok ? `llm:ok 首字${t.suggestResult.firstByteMs}ms` : `llm:err`)
+      : (t.suggestSent ? 'llm:等待中' : '—')
+    const summary = `<span style="color:#999;">${fmtAgo(t.startedAt)}</span> ${phaseBadge(t.finalPhase)} <span style="color:#555;">收音${cap} → dg:${escapeHtml(dg).slice(0, 60)} → ${llm}</span>`
+
+    const rows: string[] = []
+    rows.push(`<div><b>1 收音</b>：${t.capture ? `${t.capture.seconds}s・${(t.capture.bytes / 1024).toFixed(1)}KB・${t.capture.chunks} chunk` : '（未收尾）'}</div>`)
+    if (t.transcribe.length === 0) {
+      rows.push(`<div style="color:#c00;"><b>2+3 transcribe</b>：<b>本次沒有任何 /transcribe 送出</b>（音訊卡在 buffer 或被擋）</div>`)
+    } else {
+      t.transcribe.forEach((l, i) => {
+        const errColor = l.status.startsWith('err') || l.status === 'empty' ? ' style="color:#c00;"' : ''
+        rows.push(`<div${errColor}><b>2+3 transcribe#${i + 1}</b>：${(l.bytes / 1024).toFixed(1)}KB・${l.ms}ms・<b>${l.status}</b>${l.transcript ? `<br>逐字稿：「${escapeHtml(l.transcript)}」` : '（回空）'}${l.error ? `<br>錯誤：${escapeHtml(l.error)}` : ''}</div>`)
+      })
+    }
+    if (t.suggestSent) {
+      const ss = t.suggestSent
+      rows.push(`<div><b>4 送出 suggest</b>：${ss.provider}/${escapeHtml(ss.model)}・KB:${ss.hasKB ? '有' : '無'}・場景:${ss.scene ? '有' : '無'}・記憶${ss.historyTurns}輪<br>transcript：「${escapeHtml(ss.transcript).slice(0, 200)}」</div>`)
+    } else {
+      rows.push(`<div style="color:#7b7b7b;"><b>4 送出 suggest</b>：未送出</div>`)
+    }
+    if (t.suggestResult) {
+      const sr = t.suggestResult
+      const c = sr.ok ? '' : ' style="color:#c00;"'
+      rows.push(`<div${c}><b>5 LLM 回應</b>：${sr.ok ? 'ok' : 'ERROR'}・首字${sr.firstByteMs}ms・總${sr.totalMs}ms${sr.ok ? `<br>回答：${escapeHtml(sr.answer)}` : `<br>錯誤（上游原文）：${escapeHtml(sr.error ?? '')}`}</div>`)
+    }
+    rows.push(`<div><b>6 最終</b>：${phaseBadge(t.finalPhase)}${t.finalText ? `・「${escapeHtml(t.finalText)}」` : ''}</div>`)
+
+    return `<details style="padding:.4rem 0; border-bottom:1px solid #eee;">
+      <summary style="cursor:pointer;">${summary}</summary>
+      <div style="margin:.4rem 0 .4rem 1rem; display:flex; flex-direction:column; gap:.3rem; color:#232323; word-break:break-word;">${rows.join('')}</div>
+    </details>`
+  }).join('')
 }
 
 function fmtAgo(ts: number): string {
@@ -499,6 +658,16 @@ root.innerHTML = `
       </details>
     </section>
 
+    <section id="debug-console-section" style="margin-top: 2rem; display: none;">
+      <details open>
+        <summary style="cursor: pointer; color: #232323;">🛠 Debug Console（每次收音的完整生命週期）</summary>
+        <div style="display: flex; gap: .5rem; margin: .5rem 0;">
+          <button id="debug-console-clear" type="button" style="padding: .35rem .7rem; cursor: pointer; background: #eee;">Clear</button>
+        </div>
+        <div id="debug-console" style="max-width: 720px; max-height: 480px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: .78em; border: 1px solid #ddd; padding: .5rem;"></div>
+      </details>
+    </section>
+
     <section style="margin-top: 2rem;">
       <details>
         <summary style="cursor: pointer; color: #232323;">Recent fetches (debug)</summary>
@@ -747,6 +916,7 @@ gatedModeInput.addEventListener('change', async () => {
 showDebugOverlayInput.addEventListener('change', async () => {
   showDebugOverlay = showDebugOverlayInput.checked
   await setShowDebugOverlay(showDebugOverlay)
+  renderDebugConsole() // 同一開關控制 Debug Console 顯示
   void paint()
 })
 
@@ -800,6 +970,17 @@ function trunc(s: string, n: number): string {
 // existing trunc-to-38 the v0.2 build used.
 const LINE_WIDTH = 38
 
+// 診斷尾行（mic-off 也顯示）：t1st＝gate-start→首幀延遲（暖機假說關鍵），
+// aud＝實際收到的音訊秒數。gate-stop 後值仍保有「剛結束那次 session」的量測，
+// 下次 gate-start 才重置——故此處讀到的即「上次 session」的 t1st，供從容比對。
+function debugTail(): string[] {
+  if (!showDebugOverlay || !isRealMode || !transport) return []
+  const s = transport.stats()
+  const t1st = s.firstFrameLatencyMs < 0 ? '—' : `${s.firstFrameLatencyMs}ms`
+  const audSec = (s.bytesReceived / 32000).toFixed(1)
+  return ['', `last t1st=${t1st} aud=${audSec}s`]
+}
+
 function renderGlasses(): string {
   const mode: Mode = modeById(currentMode)
   const micGlyph = micOn ? '●' : '○'
@@ -817,6 +998,19 @@ function renderGlasses(): string {
     ].join('\n')
   }
   if (!micOn) {
+    // 狀態機：processing 期間顯示「處理中…」，不回主畫面（每一秒都有狀態）。
+    if (uiPhase === 'processing') {
+      return [header, '', '', PROCESSING_TEXT, '', '請稍候…'].join('\n')
+    }
+    // 終態提示（no-speech / error / timeout）：明確、可行動、單擊重來。
+    if (uiPhase === 'no-speech' || uiPhase === 'error' || uiPhase === 'timeout') {
+      const msg = uiPhase === 'no-speech'
+        ? NO_SPEECH_TEXT
+        : uiPhase === 'timeout'
+          ? TIMEOUT_TEXT
+          : phaseErrorText
+      return [header, '', '', msg, '', '> 單擊 收音', ...debugTail()].join('\n')
+    }
     // Phase 4：回答顯示中 — 停止收音後答案留在屏上，雙擊可延伸。
     // 官方 textContainerUpgrade 上限 512 bytes/次（超過無聲截斷），延伸
     // 逐層累積必爆 — 眼鏡端用尾端滾動窗只留最新內容；手機端仍顯示全文。
@@ -826,7 +1020,7 @@ function renderGlasses(): string {
         fixedTop.push(autoPausedReason)
         fixedTop.push('')
       }
-      const fixedBottom = ['', '[tap] 新一輪  [2x] 延伸']
+      const fixedBottom = ['', '[tap] 新一輪  [2x] 延伸', ...debugTail()]
       const fixedBytes = new TextEncoder().encode(
         [...fixedTop, ...fixedBottom].join('\n'),
       ).length + 1 // +1：answer 區與上下區之間的換行
@@ -852,6 +1046,7 @@ function renderGlasses(): string {
     idleLines.push(`${isRealMode ? '◉ live' : '◌ mock'} ready`)
     idleLines.push('> 單擊 收音')
     idleLines.push('> 雙擊 離開')
+    idleLines.push(...debugTail())
     return idleLines.join('\n')
   }
   // Live view.
@@ -880,6 +1075,12 @@ function renderGlasses(): string {
   if (showDebugOverlay && isRealMode && transport) {
     const s = transport.stats()
     lines.push(`audio frames=${s.framesReceived} chunks=${s.chunksFlushed}/${s.chunksOk}ok`)
+    // t1st：gate-start→第一幀延遲（暖機假說的關鍵）；aud：實際收到的音訊秒數
+    // （bytesReceived / 32000，16kHz mono 16bit）。兩者搭配 stt 區分失敗型態。
+    const t1st = s.firstFrameLatencyMs < 0 ? '—' : `${s.firstFrameLatencyMs}ms`
+    const audSec = (s.bytesReceived / 32000).toFixed(1)
+    lines.push(`t1st=${t1st} aud=${audSec}s`)
+    lines.push(`stt: ${s.lastTranscribeStatus} chars=${s.lastTranscriptChars}`)
     if (s.lastError) {
       lines.push(`err: ${s.lastError}`)
     }
@@ -968,6 +1169,9 @@ async function toggleMic(): Promise<void> {
     conversation.length = 0
     // User re-engaged after auto-pause — clear the stale notice.
     autoPausedReason = ''
+    clearProcessingTimer()
+    uiPhase = 'listening'
+    beginTrace() // Debug Console：開一筆新的 session 生命週期記錄
     lastTranscriptAt = Date.now()
     lastChunkAt = Date.now()
     lastChunkText = ''
@@ -986,8 +1190,16 @@ async function toggleMic(): Promise<void> {
   } else {
     stopMockTimer()
     stopMicTick()
-    if (transport) await transport.endMicSession()
+    // gate-stop 的反應式收音（真機＋閘門）：立即進入「處理中…」並啟動 15s
+    // 兜底 timer，讓 gate-stop 後的每一秒都有狀態、不回主畫面留白。
+    const willProcess = isRealMode && effectiveGated() && !!even
+    if (willProcess) {
+      enterProcessing()
+      await paint()
+    }
+    const endResult = transport ? await transport.endMicSession() : { producedText: false }
     if (even) await even.stopMic()
+    traceCapture() // Debug Console：本次 session 收音秒數/bytes/chunk（stats 差值）
     // v0.4.3: persist the session record (only if we accumulated something —
     // skip empty sessions where the user toggled mic on/off in <1s).
     if (sessionStartedAt > 0 && liveTranscript.trim().length > 0) {
@@ -1001,8 +1213,26 @@ async function toggleMic(): Promise<void> {
     }
     // Phase 4 閘門語意：gate-stop ＝ 送出。endMicSession 的尾端 flush 已
     // 把最後一段 transcript 收進 liveTranscript — 強制觸發，不等 debounce。
-    if (isRealMode && effectiveGated() && liveTranscript.trim().length > 0) {
-      await maybeRequestSuggestions(true)
+    if (willProcess) {
+      // 逾時可能在 endMicSession（transcribe）等待期間就已 fire → 別覆寫逾時畫面。
+      if (uiPhase === 'processing') {
+        const heard = liveTranscript.trim().length > 0 && endResult.producedText
+        if (heard) {
+          // maybeRequestSuggestions 內部負責 processing→answer/error 轉換
+          await maybeRequestSuggestions(true)
+        } else {
+          // 沒逐字稿：區分「真靜默」與「轉寫失敗」——後者要給可行動錯誤。
+          const st = transport ? transport.stats().lastTranscribeStatus : 'empty'
+          if (st && st !== 'empty' && st !== 'ok' && st !== '—') {
+            enterError(actionableTranscribeError(st))
+          } else {
+            enterNoSpeech()
+          }
+        }
+      }
+    } else {
+      // mock / 非閘門：不顯示處理中，依是否有答案決定終態。
+      uiPhase = hasAnswerOnScreen() ? 'answer' : 'idle'
     }
   }
   await paint()
@@ -1045,6 +1275,95 @@ function setupMediaKeyTrigger(): void {
   navigator.mediaSession.setActionHandler('pause', () => { void dispatchTrigger('gate-stop') })
 }
 
+// ── UI 狀態機轉換 helpers ──────────────────────────────────────────
+// 測試可注入較短逾時（毫秒）；未設時用常數。純測試接縫。
+function processingTimeoutMs(): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (globalThis as any).__cueProcessingTimeoutMs ?? PROCESSING_TIMEOUT_MS
+}
+
+function clearProcessingTimer(): void {
+  if (processingTimer !== null) {
+    clearTimeout(processingTimer)
+    processingTimer = null
+  }
+}
+
+// gate-stop 當下：立即進入處理中，並啟動 15s 兜底 timer（processing 必離開）。
+function enterProcessing(): void {
+  uiPhase = 'processing'
+  suggestions = []
+  extendedText = ''
+  phaseErrorText = ''
+  if (liveSuggestionsEl) liveSuggestionsEl.textContent = PROCESSING_TEXT
+  clearProcessingTimer()
+  processingTimer = setTimeout(() => {
+    // 只有仍卡在 processing 才逾時；已離開則此 timer 早被清掉。
+    if (uiPhase === 'processing') {
+      uiPhase = 'timeout'
+      if (liveSuggestionsEl) liveSuggestionsEl.textContent = TIMEOUT_TEXT
+      traceFinal('timeout', TIMEOUT_TEXT)
+      // eslint-disable-next-line no-console
+      console.log('[cue:phase] processing → timeout（15s 兜底）')
+      void paint()
+    }
+  }, processingTimeoutMs())
+}
+
+// 首字上屏 / suggest 成功：processing → answer。
+function enterAnswer(): void {
+  clearProcessingTimer()
+  uiPhase = 'answer'
+  traceFinal('answer', '')
+}
+
+// 沒取得任何逐字稿（真靜默）：processing → no-speech。
+function enterNoSpeech(): void {
+  clearProcessingTimer()
+  uiPhase = 'no-speech'
+  suggestions = []
+  extendedText = ''
+  if (liveSuggestionsEl) liveSuggestionsEl.textContent = NO_SPEECH_TEXT
+  traceFinal('no-speech', NO_SPEECH_TEXT)
+  // eslint-disable-next-line no-console
+  console.log('[cue:phase] processing → no-speech')
+}
+
+// 任何錯誤（transcribe/suggest/網路）：→ error，帶可行動訊息。
+function enterError(msg: string): void {
+  clearProcessingTimer()
+  uiPhase = 'error'
+  phaseErrorText = msg
+  suggestions = []
+  extendedText = ''
+  if (liveSuggestionsEl) liveSuggestionsEl.textContent = msg
+  traceFinal('error', msg)
+  // eslint-disable-next-line no-console
+  console.log(`[cue:phase] → error: ${msg}`)
+}
+
+// suggest 錯誤字串 → 可行動的繁中文案。上游訊息（Worker 透傳的 insufficient_quota
+// 等）比 HTTP 碼更精確，先比對關鍵字，再落回狀態碼。
+function actionableSuggestError(raw: string): string {
+  if (/insufficient_quota|exceeded your current quota|\bquota\b/i.test(raw)) return 'OpenAI 額度不足，改用 Claude'
+  if (/rate.?limit|too many requests|\b429\b/i.test(raw)) return '請求過於頻繁，稍後再試'
+  if (/OPENAI_API_KEY|ANTHROPIC_API_KEY|金鑰/i.test(raw)) return '未設定金鑰，檢查 Worker'
+  if (/unauthorized|invalid.*api.?key|\b401\b|\b403\b/i.test(raw)) return 'API 金鑰無效，檢查 Worker'
+  if (/not configured/i.test(raw)) return '未設定 Worker'
+  if (/HTTP 4\d\d/.test(raw)) return '伺服器拒絕，檢查 token'
+  if (/HTTP \d/.test(raw)) return '伺服器錯誤，再試一次'
+  if (/empty/i.test(raw)) return '回答產生失敗，再試一次'
+  if (/fetch|network|abort/i.test(raw)) return '網路連線失敗，再試一次'
+  return '發生錯誤，再試一次'
+}
+
+// transcribe 狀態（transport.stats().lastTranscribeStatus）→ 可行動文案
+function actionableTranscribeError(status: string): string {
+  if (status === 'neterr') return '網路連線失敗，再試一次'
+  if (/^http/i.test(status)) return '轉寫伺服器錯誤，再試一次'
+  return '轉寫失敗，再試一次'
+}
+
 // Phase 4：取消本段收音 — 丟棄 pending 音訊與本段 transcript，不觸發
 // /suggest、不記 session record。收音中雙擊（glasses）觸發。
 async function cancelGate(): Promise<void> {
@@ -1059,6 +1378,8 @@ async function cancelGate(): Promise<void> {
   lastTranscript = ''
   suggestions = []
   extendedText = ''
+  clearProcessingTimer()
+  uiPhase = 'idle'
   // eslint-disable-next-line no-console
   console.log('[cue:gate] cancelled — 本段已丟棄')
   await paint()
@@ -1288,6 +1609,7 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
     // 對話記憶：閒置太久＝新對話，先清空；送出當下的逐字稿另存，成功後成一輪
     maybeResetHistoryOnIdle(Date.now())
     const sentTranscript = liveTranscript
+    traceSuggestSent(sentTranscript) // Debug Console：記 suggest 送出（欄位＋時間）
     // Phase 3：串流版 — 手機側每個增量即時渲染（DOM 便宜），眼鏡側經
     // 300ms 節流；舊 Worker 回 JSON 時自動 fallback（不會有 onDelta）。
     const result = await transport.requestSuggestionsStream({
@@ -1309,6 +1631,13 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
       kbExtra: kbAttach[currentMode].extra && kbExtra ? kbExtra : undefined,
     }, {
       onDelta(accumulated) {
+        traceSuggestFirstByte() // Debug Console：記首字延遲
+        // 反應式（gate-stop，micOn=false）：首字上屏＝processing→answer；
+        // 逾時/錯誤後晚到的串流不得覆寫終態（stale 直接丟棄）。
+        if (!micOn) {
+          if (uiPhase !== 'processing' && uiPhase !== 'answer') return
+          if (uiPhase === 'processing') enterAnswer()
+        }
         // 串流中：整段累積文字持續當作單一完整回答顯示
         suggestions = [accumulated]
         liveSuggestionsEl.textContent = accumulated
@@ -1318,18 +1647,32 @@ async function maybeRequestSuggestions(force = false): Promise<void> {
     if (result.ok) {
       // 未決的串流渲染立即出清，再畫最終完整回答
       glassesThrottle.flush()
-      liveSuggestionsEl.textContent = result.suggestions.join('\n')
-      suggestions = result.suggestions
-      // Track the new suggestions for next-call dedupe.
-      for (const s of result.suggestions) {
-        recentSuggestionsRing.push(s)
+      // 反應式且已離開 processing/answer（逾時）＝ stale，保留逾時畫面
+      const stale = !micOn && uiPhase !== 'processing' && uiPhase !== 'answer'
+      if (!stale) {
+        if (!micOn) enterAnswer() // JSON fallback（無 onDelta）也要收束到 answer
+        liveSuggestionsEl.textContent = result.suggestions.join('\n')
+        suggestions = result.suggestions
+        // Track the new suggestions for next-call dedupe.
+        for (const s of result.suggestions) {
+          recentSuggestionsRing.push(s)
+        }
+        while (recentSuggestionsRing.length > RECENT_SUGGESTIONS_CAP) {
+          recentSuggestionsRing.shift()
+        }
+        // 對話記憶：把「這句話 → 給的回答」收成一輪，供下次追問接續
+        pushDialogTurn(sentTranscript, result.suggestions.join('\n'))
       }
-      while (recentSuggestionsRing.length > RECENT_SUGGESTIONS_CAP) {
-        recentSuggestionsRing.shift()
+      traceSuggestResult(true, result.suggestions.join('\n'))
+    } else if (!micOn) {
+      // 反應式錯誤 → error 狀態（可行動訊息）；已逾時則忽略晚到錯誤。
+      traceSuggestResult(false, '', result.error)
+      if (uiPhase === 'processing' || uiPhase === 'answer') {
+        enterError(actionableSuggestError(result.error))
       }
-      // 對話記憶：把「這句話 → 給的回答」收成一輪，供下次追問接續
-      pushDialogTurn(sentTranscript, result.suggestions.join('\n'))
     } else {
+      // 自動收音（micOn）：沿用 live 視圖的行內錯誤
+      traceSuggestResult(false, '', result.error)
       suggestions = [`(LLM error: ${result.error.slice(0, 40)})`]
     }
     await paint()
@@ -1619,6 +1962,12 @@ fetchLogRefreshBtn.addEventListener('click', () => renderFetchLog())
 setTransportLogger(pushFetchLog)
 renderFetchLog()
 
+const debugConsoleEl = document.querySelector<HTMLDivElement>('#debug-console')!
+const debugConsoleSection = document.querySelector<HTMLElement>('#debug-console-section')!
+const debugConsoleClearBtn = document.querySelector<HTMLButtonElement>('#debug-console-clear')!
+debugConsoleClearBtn.addEventListener('click', () => { traces.length = 0; currentTrace = null; renderDebugConsole() })
+renderDebugConsole()
+
 // v0.4.3 — Session history panel (past mic sessions)
 const sessionHistoryEl = document.querySelector<HTMLDivElement>('#session-history')!
 const sessionHistoryClearBtn = document.querySelector<HTMLButtonElement>('#session-history-clear')!
@@ -1740,6 +2089,7 @@ async function bootstrap(): Promise<void> {
   // Hydrate v0.4.0 toggles.
   showDebugOverlay = await getShowDebugOverlay()
   showDebugOverlayInput.checked = showDebugOverlay
+  renderDebugConsole() // 依 hydrate 後的開關決定顯示
   wearerSpeakerId = await getWearerSpeakerId()
   wearerSpeakerSelect.value = String(wearerSpeakerId)
   calibratingNow = await getCalibrating()

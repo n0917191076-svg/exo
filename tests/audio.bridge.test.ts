@@ -553,6 +553,305 @@ describe('Cue audio pipeline (fake bridge + mocked worker)', () => {
     expect(fake.lastRender()).not.toMatch(/這句要被丟掉/)
   })
 
+  it('gated：Worker 回 text:\'\' → 不發 /suggest，眼鏡＋手機顯示「沒聽清楚，再說一次」', async () => {
+    // 極短語音 Deepgram 常回空 transcript — 不可靜默 return，必須有 UI 回饋
+    const suggestCalls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        suggestCalls.push(u)
+        return new Response(JSON.stringify({ ok: true, suggestions: ['x'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')          // gate-start
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(1, 8_000)          // 250ms 極短語音
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeTap('glasses')          // gate-stop
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(suggestCalls).toHaveLength(0)                 // 沒逐字稿 → 不打 /suggest
+    expect(fake.lastRender()).toMatch(/沒聽清楚，再說一次/) // 眼鏡有提示
+    const phone = document.querySelector('#live-suggestions')?.textContent ?? ''
+    expect(phone).toMatch(/沒聽清楚，再說一次/)           // 手機也有提示
+    expect(fake.lastRender()).not.toMatch(/處理中/)        // 已離開 processing
+  })
+
+  // ── 狀態機：processing → (answer | error | timeout) ───────────────
+  // 用可控串流的 /suggest 觀察 gate-stop 後的「處理中…」與後續轉換。
+  function controllableSuggestFetch(opts: {
+    transcribeText?: string
+    suggestStatus?: number
+    onController?: (c: ReadableStreamDefaultController<Uint8Array>) => void
+    hangSuggest?: boolean
+  }): void {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: opts.transcribeText ?? '你好嗎' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        if (opts.hangSuggest) return new Promise<Response>(() => {}) // 永不 resolve
+        if (opts.suggestStatus && opts.suggestStatus !== 200) {
+          return new Response('err', { status: opts.suggestStatus })
+        }
+        const body = new ReadableStream<Uint8Array>({
+          start(c) { opts.onController?.(c) },
+        })
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+  }
+
+  async function driveGateStop(): Promise<void> {
+    fake.invokeTap('glasses')          // gate-start
+    await new Promise(r => setTimeout(r, 50))
+    fake.pumpFrames(2, 10_000)
+    await new Promise(r => setTimeout(r, 30))
+    fake.invokeTap('glasses')          // gate-stop
+  }
+
+  it('gated：gate-stop 當下立即顯示「處理中…」，首字上屏後被答案取代（processing→answer）', async () => {
+    let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
+    controllableSuggestFetch({ onController: c => { ctrl = c } })
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    void driveGateStop()
+    await new Promise(r => setTimeout(r, 160)) // transcribe 已回、/suggest 串流未吐字
+    expect(fake.lastRender()).toMatch(/處理中…/)              // 眼鏡處理中
+    const phoneMid = document.querySelector('#live-suggestions')?.textContent ?? ''
+    expect(phoneMid).toMatch(/處理中…/)                        // 手機同步
+
+    ctrl!.enqueue(new TextEncoder().encode('你好，很高興認識你'))
+    await new Promise(r => setTimeout(r, 60))
+    expect(fake.lastRender()).toMatch(/你好，很高興認識你/)    // 答案取代處理中
+    expect(fake.lastRender()).not.toMatch(/處理中/)
+    ctrl!.close()
+  })
+
+  it('gated：/suggest 錯誤 → processing→error，顯示可行動訊息，不卡在處理中', async () => {
+    controllableSuggestFetch({ suggestStatus: 500 })
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    void driveGateStop()
+    await new Promise(r => setTimeout(r, 200))
+    expect(fake.lastRender()).toMatch(/伺服器錯誤，再試一次/)
+    expect(fake.lastRender()).not.toMatch(/處理中/)
+  })
+
+  it('診斷：debug overlay 開時，gate-stop 後 mic-off 畫面顯示上次 session 的 t1st/aud', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '你好嗎' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        return new Response(JSON.stringify({ ok: true, suggestions: ['嗨，你好'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:show-debug-overlay:v1': '1', // 開診斷 overlay
+    })
+    void driveGateStop()
+    await new Promise(r => setTimeout(r, 200))
+    // 答案畫面（mic-off）底部應帶診斷尾行，含首幀延遲與音訊秒數
+    expect(fake.lastRender()).toMatch(/last t1st=.*aud=.*s/)
+  })
+
+  it('時序修正：gate-stop 時前一塊仍在飛，transcribe 回非空 → 觸發 /suggest 不走 no-speech', async () => {
+    // 重現 4.2s 案例：2.5s 觸發 active flush（在飛），gate-stop 時該塊未回。
+    // 修正後 endMicSession 必等它回來 → producedText=true → /suggest，不顯示沒聽清楚。
+    let releaseFirst: (() => void) | null = null
+    const firstGate = new Promise<void>(r => { releaseFirst = r })
+    let transcribeCalls = 0
+    const suggestCalls: string[] = []
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        transcribeCalls += 1
+        if (transcribeCalls === 1) {
+          await firstGate // 第一塊卡住（模擬 Deepgram 尚未回）
+          return new Response(JSON.stringify({ ok: true, text: '我們這個PM產品經理的想像' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({ ok: true, text: '尾端' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        suggestCalls.push(u)
+        return new Response(JSON.stringify({ ok: true, suggestions: ['建議回答'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    fake.invokeTap('glasses')            // gate-start
+    await new Promise(r => setTimeout(r, 40))
+    fake.pumpFrames(2, 40_000)           // 80KB ≥ CHUNK_BYTES → 觸發 active flush（第一塊在飛）
+    fake.pumpFrames(1, 16_000)           // 尾端 pending
+    await new Promise(r => setTimeout(r, 20))
+    fake.invokeTap('glasses')            // gate-stop：endMicSession 應等第一塊回來
+    await new Promise(r => setTimeout(r, 30))
+    releaseFirst!()                       // 放行第一塊（帶正確逐字稿）
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(transcribeCalls).toBeGreaterThanOrEqual(1)
+    expect(suggestCalls.length).toBeGreaterThanOrEqual(1)     // 有觸發 /suggest
+    expect(fake.lastRender()).not.toMatch(/沒聽清楚/)          // 不走 no-speech
+    expect(fake.lastRender()).toMatch(/建議回答/)             // 顯示答案
+  })
+
+  it('Debug Console：一次 gate-stop 後，面板記錄收音/逐字稿/suggest/最終狀態', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '你好嗎測試逐字稿' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        return new Response(JSON.stringify({ ok: true, suggestions: ['嗨我很好謝謝'] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+      'cue:show-debug-overlay:v1': '1',
+    })
+    void driveGateStop()
+    await new Promise(r => setTimeout(r, 200))
+    const console_ = document.querySelector('#debug-console')?.textContent ?? ''
+    expect(console_).toMatch(/你好嗎測試逐字稿/) // 逐字稿全文入面板
+    expect(console_).toMatch(/嗨我很好謝謝/)      // LLM 回答入面板
+    expect(console_).toMatch(/收音/)              // 收音摘要
+    expect(console_).toMatch(/answer/)            // 最終狀態
+    // 面板區塊在 debug overlay 開時可見
+    const section = document.querySelector<HTMLElement>('#debug-console-section')
+    expect(section?.style.display).toBe('block')
+  })
+
+  it('gated：/suggest 上游 quota 400 → 顯示「OpenAI 額度不足」而非 http400', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        return new Response(JSON.stringify({ ok: true, text: '你好嗎' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (u.includes('/suggest')) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'openai 400: insufficient_quota — You exceeded your current quota' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+    await bootMocked({
+      'cue:privacy-agreed:v1': '1',
+      'cue:worker-url:v1': 'https://cue-test.workers.dev',
+      'cue:worker-token:v1': 'test-bearer',
+    })
+    void driveGateStop()
+    await new Promise(r => setTimeout(r, 200))
+    expect(fake.lastRender()).toMatch(/OpenAI 額度不足/)
+    expect(fake.lastRender()).not.toMatch(/http400|HTTP 400/i)
+  })
+
+  it('gated：/suggest 卡住 → 15s 兜底逾時（縮短測試），processing→timeout', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).__cueProcessingTimeoutMs = 120
+    try {
+      controllableSuggestFetch({ hangSuggest: true })
+      await bootMocked({
+        'cue:privacy-agreed:v1': '1',
+        'cue:worker-url:v1': 'https://cue-test.workers.dev',
+        'cue:worker-token:v1': 'test-bearer',
+      })
+      void driveGateStop()
+      await new Promise(r => setTimeout(r, 260)) // > 120ms 逾時
+      expect(fake.lastRender()).toMatch(/連線逾時，再試一次/)
+      expect(fake.lastRender()).not.toMatch(/處理中/) // 保證離開 processing
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (globalThis as any).__cueProcessingTimeoutMs
+    }
+  })
+
+  it('gated：逾時後晚到的答案不覆寫逾時畫面（stale 防護）', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).__cueProcessingTimeoutMs = 120
+    try {
+      let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
+      controllableSuggestFetch({ onController: c => { ctrl = c } })
+      await bootMocked({
+        'cue:privacy-agreed:v1': '1',
+        'cue:worker-url:v1': 'https://cue-test.workers.dev',
+        'cue:worker-token:v1': 'test-bearer',
+      })
+      void driveGateStop()
+      await new Promise(r => setTimeout(r, 260)) // 先逾時
+      expect(fake.lastRender()).toMatch(/連線逾時，再試一次/)
+      // 晚到的串流不得覆寫逾時
+      ctrl!.enqueue(new TextEncoder().encode('這是遲到的答案'))
+      await new Promise(r => setTimeout(r, 60))
+      expect(fake.lastRender()).toMatch(/連線逾時，再試一次/)
+      expect(fake.lastRender()).not.toMatch(/這是遲到的答案/)
+      ctrl!.close()
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (globalThis as any).__cueProcessingTimeoutMs
+    }
+  })
+
   it('回答視圖開頭定錨窗：超長答案留開頭、尾端補 ▼，總量 ≤512 bytes', async () => {
     // 提詞機語意：全文遠超 512 bytes 時，眼鏡端裁尾留頭（由朗讀節奏推進，非跟生成捲尾）
     const longAnswer = `唯一開頭標記${'這是一段有內容的專業分析。'.repeat(30)}真正的尾端`

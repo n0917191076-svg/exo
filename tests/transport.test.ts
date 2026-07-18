@@ -69,6 +69,30 @@ describe('createTransport', () => {
     if (!r.ok) expect(r.error).toMatch(/429/)
   })
 
+  // 不可靜默失敗：Worker 對上游 4xx/5xx 回 JSON {ok:false,error:"openai 429: ...
+  // insufficient_quota..."}；plugin 必須保留上游訊息，不能只回 "Worker HTTP 400"。
+  it('requestSuggestions 保留 Worker body 的上游錯誤訊息（含 insufficient_quota）', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ ok: false, error: 'openai 429: insufficient_quota — You exceeded your current quota' }),
+      { status: 429, headers: { 'Content-Type': 'application/json' } },
+    )) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const r = await t.requestSuggestions({ mode: 'work', transcript: 'hi' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/insufficient_quota/)
+  })
+
+  it('requestSuggestionsStream 保留 Worker body 的上游錯誤訊息', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ ok: false, error: 'openai 400: insufficient_quota' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const r = await t.requestSuggestionsStream({ mode: 'work', transcript: 'hi' }, { onDelta: () => {} })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/insufficient_quota/)
+  })
+
   it('requestSuggestions surfaces network failure as error result', async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new TypeError('Failed to fetch')
@@ -372,6 +396,108 @@ describe('createTransport', () => {
     t.sendAudioFrame(new Uint8Array(20_000))
     await t.endMicSession()
     expect(urls.find(u => u.includes('/transcribe'))).toContain('gated=0')
+  })
+
+  // ─── 極短語音修正：force-flush 送出、尾端補靜音、繞過 MIN_CHUNK ───
+  // BYTES_PER_SECOND = 16000×2 = 32000；MIN_CHUNK = 0.5s = 16000；
+  // PADDING_TARGET = 1.5s = 48000。
+  const BYTES_PER_SECOND = 32_000
+  const PADDING_TARGET_BYTES = BYTES_PER_SECOND * 1.5 // 48000
+
+  async function captureTranscribeBody(
+    frameBytes: number,
+    fill: number,
+  ): Promise<{ transcribeCalls: number; body: Uint8Array | null }> {
+    let transcribeCalls = 0
+    let body: Uint8Array | null = null
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        transcribeCalls += 1
+        const b = init?.body as Blob
+        body = new Uint8Array(await b.arrayBuffer())
+        return new Response(JSON.stringify({ ok: true, text: '你好嗎' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    await t.startMicSession(() => {}, () => {})
+    const frame = new Uint8Array(frameBytes)
+    frame.fill(fill)
+    t.sendAudioFrame(frame)
+    await t.endMicSession()
+    return { transcribeCalls, body }
+  }
+
+  it('尾端 250ms buffer + endMicSession() 必送出一次 /transcribe（force 繞過 MIN_CHUNK）', async () => {
+    // 250ms = 8000 bytes，遠低於 MIN_CHUNK(16000) — 舊行為會整段丟棄
+    const { transcribeCalls, body } = await captureTranscribeBody(8_000, 0xab)
+    expect(transcribeCalls).toBe(1)
+    expect(body).not.toBeNull()
+  })
+
+  it('480ms 輸入 → body 被補靜音到 ≥1.5s 門檻，且原音在前段完整', async () => {
+    const frameBytes = 15_360 // 480ms
+    const { transcribeCalls, body } = await captureTranscribeBody(frameBytes, 0xab)
+    expect(transcribeCalls).toBe(1)
+    expect(body!.byteLength).toBeGreaterThanOrEqual(PADDING_TARGET_BYTES)
+    // 原音（0xAB）完整保留在前段
+    for (let i = 0; i < frameBytes; i++) expect(body![i]).toBe(0xab)
+    // 尾端補的是靜音 0x00
+    expect(body![frameBytes]).toBe(0x00)
+    expect(body![body!.byteLength - 1]).toBe(0x00)
+  })
+
+  it('單塊 800ms 不被 MIN_CHUNK 擋掉，且同樣補到 target', async () => {
+    const { transcribeCalls, body } = await captureTranscribeBody(25_600, 0xcd) // 800ms
+    expect(transcribeCalls).toBe(1)
+    expect(body!.byteLength).toBeGreaterThanOrEqual(PADDING_TARGET_BYTES)
+  })
+
+  // ─── gate-stop 排空：前一塊仍在飛時，endMicSession 必等它完成 ───────
+  // 重現「第一次講 3 秒 → 沒聽清楚，第二次才 3秒+1秒合併」的根因：
+  // 2.5s 塊 flush 還 inFlight 時 gate-stop，舊碼 flush(true) 被 inFlight 擋掉、
+  // producedText 讀到 false、在飛塊晚回時 onTranscriptCb 已 null → 文字丟失。
+  it('前一塊在飛時 gate-stop：endMicSession 等它完成，producedText=true、文字不漏、尾端也送', async () => {
+    let releaseFirst: (() => void) | null = null
+    const firstGate = new Promise<void>(r => { releaseFirst = r })
+    let transcribeCalls = 0
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/healthz')) return new Response('ok', { status: 200 })
+      if (u.includes('/transcribe')) {
+        transcribeCalls += 1
+        if (transcribeCalls === 1) {
+          await firstGate // 第一塊卡住（模擬 Deepgram 尚未回）
+          return new Response(JSON.stringify({ ok: true, text: '第一塊三秒內容' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({ ok: true, text: '尾端零點五秒' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('nf', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const t = createTransport('https://cue.example.workers.dev', 'secret')
+    const texts: string[] = []
+    await t.startMicSession(e => texts.push(e.text), () => {})
+    t.sendAudioFrame(new Uint8Array(80_000)) // 達 CHUNK_BYTES → 觸發第一塊 flush（inFlight）
+    t.sendAudioFrame(new Uint8Array(16_000)) // 尾端 pending（未達門檻，不自動送）
+    await new Promise(r => setTimeout(r, 10)) // 讓第一塊 flush 進入 inFlight（卡 firstGate）
+
+    const endP = t.endMicSession()            // gate-stop：必須等第一塊 + 送尾端
+    releaseFirst!()                            // 放行第一塊
+    const r = await endP
+
+    expect(r.producedText).toBe(true)          // 等到轉寫結果，非 false
+    expect(texts).toContain('第一塊三秒內容')   // 在飛塊文字沒被 onTranscriptCb=null 丟棄
+    expect(texts).toContain('尾端零點五秒')      // 尾端也送出（不卡 buffer）
+    expect(transcribeCalls).toBe(2)
   })
 
   it('requestSuggestionsStream 帶 extendContext 進 body', async () => {

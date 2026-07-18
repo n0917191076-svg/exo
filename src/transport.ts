@@ -83,8 +83,12 @@ export interface CueTransport {
   ready: boolean
   startMicSession: (onTranscript: (e: TranscriptEvent) => void, onError: (msg: string) => void) => Promise<void>
   sendAudioFrame: (frame: Uint8Array) => void
-  /** Phase 4：discard=true 丟棄尾端 pending 音訊（取消本段），不打 /transcribe。 */
-  endMicSession: (opts?: { discard?: boolean }) => Promise<void>
+  /**
+   * Phase 4：discard=true 丟棄尾端 pending 音訊（取消本段），不打 /transcribe。
+   * 回傳 producedText：本次 session 是否至少產出過一句非空逐字稿，讓呼叫端
+   * 能在「開了麥卻沒聽到任何話」時給提示。
+   */
+  endMicSession: (opts?: { discard?: boolean }) => Promise<{ producedText: boolean }>
   /** VAD（自動收音模式）：說完即刻送出 pending 音訊，不等切塊滿。低於 MIN_CHUNK 或已有請求在飛則無作用。 */
   flushNow: () => void
   requestSuggestions: (params: SuggestParams) => Promise<{ ok: true; suggestions: string[] } | { ok: false; error: string }>
@@ -106,7 +110,16 @@ export interface CueTransport {
     cb: { onDelta: (accumulated: string) => void },
   ) => Promise<{ ok: true; answer: string } | { ok: false; error: string }>
   /** Diagnostic stats — used by the UI to show whether audio is flowing. */
-  stats: () => { framesReceived: number; bytesReceived: number; chunksFlushed: number; chunksOk: number; lastError: string }
+  stats: () => {
+    framesReceived: number
+    bytesReceived: number
+    chunksFlushed: number
+    chunksOk: number
+    lastError: string
+    lastTranscriptChars: number
+    lastTranscribeStatus: string
+    firstFrameLatencyMs: number
+  }
 }
 
 // Per-fetch debug log entry — captured for every /transcribe and /suggest
@@ -122,6 +135,8 @@ export interface CueFetchLog {
   ok: boolean
   error?: string           // user-friendly summary
   bytes?: number           // request body size
+  kind?: 'transcribe' | 'suggest' | 'vision'  // Debug Console 分層用
+  transcript?: string      // transcribe 回應逐字稿全文（''＝Deepgram 回空，可辨 empty）
 }
 
 let logSink: ((entry: CueFetchLog) => void) | null = null
@@ -145,6 +160,21 @@ function explainHttp(status: number, body: string): string {
   return `HTTP ${status}: ${body.slice(0, 120)}`
 }
 
+// 上游（Anthropic/OpenAI/Deepgram）4xx/5xx 時，Worker 一律回 JSON
+// {ok:false, error} 並把上游狀態碼/訊息（如 insufficient_quota）包在 error 裡。
+// 保留它——只回「Worker HTTP 400」會丟失可行動原因（不可靜默失敗）。兩家共用。
+async function errorFromResponse(resp: Response): Promise<string> {
+  try {
+    const j = (await resp.json()) as { error?: string }
+    if (j && typeof j.error === 'string' && j.error) {
+      return `Worker HTTP ${resp.status}: ${j.error}`
+    }
+  } catch {
+    /* 非 JSON body — 落回純狀態碼 */
+  }
+  return `Worker HTTP ${resp.status}`
+}
+
 // Audio chunking — keep low enough that the user feels live, high enough
 // that Deepgram batch latency + chunk-boundary inaccuracy stays tolerable.
 // 2.5s is the empirical sweet spot for a coaching app where the LLM
@@ -153,7 +183,15 @@ const SAMPLE_RATE = 16000
 const BYTES_PER_SECOND = SAMPLE_RATE * 2 // 16-bit mono
 const CHUNK_MS = 2500
 const CHUNK_BYTES = Math.round((BYTES_PER_SECOND * CHUNK_MS) / 1000)
-const MIN_CHUNK_BYTES = Math.round(BYTES_PER_SECOND * 0.5) // 500ms — below this, skip the call
+const MIN_CHUNK_BYTES = Math.round(BYTES_PER_SECOND * 0.5) // 500ms — below this, skip the call（僅擋非 force 流程）
+// 極短語音修正：Deepgram nova-3 對 <1.5s 的中文常回空 transcript。gate-stop
+// 的尾端 force-flush 若不足此長度，就在尾端補靜音 PCM(0x00) 到 1.5s，原始音訊
+// 保持在前段完整——換來的空 transcript 大幅減少，代價是每段多幾 KB 靜音。
+const PADDING_TARGET_MS = 1500
+const PADDING_TARGET_BYTES = Math.round((BYTES_PER_SECOND * PADDING_TARGET_MS) / 1000)
+// /transcribe 的 fetch 逾時上限。原本無 AbortController，卡住的請求永不返回、
+// endMicSession 永不 resolve → UI 永遠停在 processing。任何等待都必須有 timeout。
+const TRANSCRIBE_FETCH_TIMEOUT_MS = 12_000
 
 export function createTransport(
   workerUrl: string,
@@ -172,6 +210,8 @@ export function createTransport(
   let onErrorCb: ((msg: string) => void) | null = null
   let pending = new Uint8Array(0)
   let inFlight = false
+  // 目前在飛的 flush promise（供 endMicSession 排空——等轉寫結果回來再判 producedText）。
+  let inFlightPromise: Promise<void> | null = null
   let active = false
   // Diagnostic counters — surface via stats() so the UI can show whether
   // audio is flowing (most common silent failure mode: SDK starts mic but
@@ -181,22 +221,56 @@ export function createTransport(
   let chunksFlushed = 0
   let chunksOk = 0
   let lastError = ''
+  // 診斷：最後一段逐字稿字數與狀態（overlay 顯示 stt: 行）。
+  let lastTranscriptChars = 0
+  let lastTranscribeStatus = '—'
+  // 本次 session 是否至少收到一句非空逐字稿；endMicSession 回傳給呼叫端。
+  let sessionProducedText = false
+  // 診斷：首幀延遲 — startMicSession（active=true，緊接 audioControl）到第一個
+  // PCM frame 的毫秒數。驗證「audioControl 暖機延遲吃掉短句起始」假說的關鍵數字。
+  // -1 = 本次 session 尚未收到任何 frame。
+  let micStartAt = 0
+  let firstFrameLatencyMs = -1
 
   // POST one accumulated chunk to the worker. We never block the audio
   // pipeline on a slow request — `inFlight` gates concurrency and any
   // bytes that arrive while a request is in flight just keep accumulating
   // in `pending` for the next flush.
-  async function flush(force = false): Promise<void> {
-    // `force` lets endMicSession drain the trailing partial chunk
-    // even after `active` has been cleared. Without it, the
-    // post-session flush is a silent no-op (caught while writing
-    // v0.4.0 utterance tests; previously the trailing 5-30s of a
-    // session was being dropped on the floor).
-    if ((!active && !force) || inFlight || pending.byteLength < MIN_CHUNK_BYTES) return
+  // 同步排程器：判斷是否要送、取出 chunk、啟動 async 送出並記錄 inFlightPromise。
+  // 回傳可 await 的 promise（在飛時回傳「正在飛的那個」，供 endMicSession 排空）。
+  function flush(force = false): Promise<void> {
+    // 在飛時：回傳目前那個 promise，讓呼叫端能 await 它完成（而非 no-op return）。
+    // 這是 gate-stop 時序 bug 的修正核心——endMicSession 靠它等轉寫結果回來。
+    if (inFlight) return inFlightPromise ?? Promise.resolve()
+    if (!force) {
+      // 一般（active）flush：未達切塊門檻先不送，避免碎片請求。
+      if (!active || pending.byteLength < MIN_CHUNK_BYTES) return Promise.resolve()
+    } else {
+      // force（endMicSession 尾端）：只要 >0 bytes 就送，繞過 MIN_CHUNK，
+      // 否則不足 0.5s 的尾端 buffer 會被整段丟棄（極短語音完全沒反應的主因）。
+      if (pending.byteLength === 0) return Promise.resolve()
+    }
     inFlight = true
     chunksFlushed += 1
-    const chunk = pending
+    let chunk = pending
     pending = new Uint8Array(0)
+    // 不足 1.5s 時尾端補靜音，原音在前段完整（見 PADDING_TARGET_BYTES 註解）。
+    // 一般 flush 送的是 ≥CHUNK_BYTES(2.5s) 的整塊，永遠 >target，不受影響。
+    if (chunk.byteLength < PADDING_TARGET_BYTES) {
+      const padded = new Uint8Array(PADDING_TARGET_BYTES)
+      padded.set(chunk, 0)
+      chunk = padded
+    }
+    const p = sendChunk(chunk).finally(() => {
+      inFlight = false
+      if (inFlightPromise === p) inFlightPromise = null
+    })
+    inFlightPromise = p
+    return p
+  }
+
+  // 實際送出一塊到 /transcribe。inFlight 生命週期由 flush 的 p.finally 管理。
+  async function sendChunk(chunk: Uint8Array<ArrayBuffer>): Promise<void> {
     const url = `${baseHttp}/transcribe?lang=${lang}&gated=${gated ? 1 : 0}`
     const startedAt = Date.now()
     try {
@@ -204,13 +278,16 @@ export function createTransport(
       // Blobs more consistently across iOS versions, especially with
       // CORS preflight where some implementations refuse raw binary.
       const body = new Blob([chunk], { type: 'application/octet-stream' })
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), TRANSCRIBE_FETCH_TIMEOUT_MS)
       const resp = await fetch(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${bearerToken}`,
         },
         body,
-      })
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer))
       if (!resp.ok) {
         const txt = await resp.text().catch(() => '')
         const friendly = explainHttp(resp.status, txt)
@@ -218,8 +295,9 @@ export function createTransport(
         logSink?.({
           ts: startedAt, url, method: 'POST',
           status: resp.status, ms: Date.now() - startedAt, ok: false,
-          error: friendly, bytes: chunk.byteLength,
+          error: friendly, bytes: chunk.byteLength, kind: 'transcribe',
         })
+        lastTranscribeStatus = `http${resp.status}`
         onErrorCb?.(`transcribe HTTP ${resp.status}: ${txt.slice(0, 80)}`)
         return
       }
@@ -234,18 +312,22 @@ export function createTransport(
         logSink?.({
           ts: startedAt, url, method: 'POST',
           status: resp.status, ms: Date.now() - startedAt, ok: false,
-          error: json.error ?? 'transcribe failed', bytes: chunk.byteLength,
+          error: json.error ?? 'transcribe failed', bytes: chunk.byteLength, kind: 'transcribe',
         })
+        lastTranscribeStatus = 'worker-err'
         onErrorCb?.(json.error ?? 'transcribe failed')
         return
       }
       chunksOk += 1
       lastError = '' // success — clear stale error
+      const text = (json.text ?? '').trim()
+      // Debug Console：帶上逐字稿全文（含 ''＝Deepgram 回空），讓面板能分辨
+      // 「送出成功但回空」與「有內容」——這是短句 no-speech 定位的關鍵一層。
       logSink?.({
         ts: startedAt, url, method: 'POST',
         status: resp.status, ms: Date.now() - startedAt, ok: true, bytes: chunk.byteLength,
+        kind: 'transcribe', transcript: text,
       })
-      const text = (json.text ?? '').trim()
       const utterances: TranscriptUtterance[] = (json.utterances ?? [])
         .map(u => ({
           speaker: typeof u.speaker === 'number' ? u.speaker : 0,
@@ -253,21 +335,26 @@ export function createTransport(
           confidence: typeof u.confidence === 'number' ? u.confidence : 0,
         }))
         .filter(u => u.text.length > 0)
-      if (text && onTranscriptCb) {
-        onTranscriptCb({ type: 'transcript', text, isFinal: true, utterances })
+      if (text) {
+        lastTranscriptChars = text.length
+        lastTranscribeStatus = 'ok'
+        sessionProducedText = true
+        onTranscriptCb?.({ type: 'transcript', text, isFinal: true, utterances })
+      } else {
+        lastTranscribeStatus = 'empty'
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       lastError = `network: ${msg.slice(0, 70)}`
+      lastTranscribeStatus = 'neterr'
       logSink?.({
         ts: startedAt, url, method: 'POST',
         status: null, ms: Date.now() - startedAt, ok: false,
-        error: `Network failure: ${msg.slice(0, 120)}`, bytes: chunk.byteLength,
+        error: `Network failure: ${msg.slice(0, 120)}`, bytes: chunk.byteLength, kind: 'transcribe',
       })
       onErrorCb?.(`transcribe network error: ${msg.slice(0, 80)}`)
-    } finally {
-      inFlight = false
     }
+    // inFlight=false 由 flush 的 p.finally 統一管理（勿在此重複清）。
   }
 
   return {
@@ -299,10 +386,17 @@ export function createTransport(
       onErrorCb = onError
       pending = new Uint8Array(0)
       inFlight = false
+      inFlightPromise = null
       active = true
+      sessionProducedText = false
+      micStartAt = Date.now()
+      firstFrameLatencyMs = -1
     },
     sendAudioFrame(frame) {
       if (!active) return
+      if (framesReceived === 0 && micStartAt > 0) {
+        firstFrameLatencyMs = Date.now() - micStartAt
+      }
       framesReceived += 1
       bytesReceived += frame.byteLength
       // Accumulate. Each incoming frame is small (~10-40ms typically); we
@@ -319,22 +413,31 @@ export function createTransport(
       void flush()
     },
     async endMicSession(opts = {}) {
-      // Final flush for the trailing partial chunk so a quick utterance
-      // ending mid-buffer isn't dropped. `force` is required because the
-      // active-flag check would otherwise skip the trailing send (set
-      // active=false BEFORE awaiting so no new sendAudioFrame races in).
-      // Phase 4：discard（取消本段）— 丟棄 pending，不打 /transcribe。
+      // active=false BEFORE awaiting so no new sendAudioFrame races in.
       active = false
+      // 排空：先等任何在飛的塊完成——否則它晚回時 onTranscriptCb 已被清/被下一
+      // session 覆寫（文字丟失或錯置），且 producedText 會在轉寫結果回來前就被讀成
+      // false（gate-stop「沒聽清楚」假象的根因）。等它回來，sessionProducedText 與
+      // onTranscriptCb 才反映真實結果。
+      if (inFlightPromise) {
+        try { await inFlightPromise } catch { /* 已於 sendChunk 內記錄 */ }
+      }
+      // Phase 4：discard（取消本段）— 丟棄 pending，不打 /transcribe。
       if (opts.discard) {
         pending = new Uint8Array(0)
       } else {
+        // 送尾端 partial chunk 並 await 到轉寫結果（此時 inFlight 已 false，不被擋）。
         await flush(true)
       }
       onTranscriptCb = null
       onErrorCb = null
+      return { producedText: sessionProducedText }
     },
     stats() {
-      return { framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError }
+      return {
+        framesReceived, bytesReceived, chunksFlushed, chunksOk, lastError,
+        lastTranscriptChars, lastTranscribeStatus, firstFrameLatencyMs,
+      }
     },
     async requestSuggestions({ mode, transcript, customPrompt, recentSuggestions, sceneNote, model, length, lang: suggestLang, kbPersonal, kbExtra, history }) {
       if (!ready) return { ok: false as const, error: 'Worker not configured' }
@@ -352,7 +455,7 @@ export function createTransport(
           signal: ctrl.signal,
         })
         if (!resp.ok) {
-          return { ok: false as const, error: `Worker HTTP ${resp.status}` }
+          return { ok: false as const, error: await errorFromResponse(resp) }
         }
         const json = (await resp.json()) as
           | { ok: true; suggestions: string[] }
@@ -385,7 +488,7 @@ export function createTransport(
           signal: ctrl.signal,
         })
         if (!resp.ok) {
-          return { ok: false as const, error: `Worker HTTP ${resp.status}` }
+          return { ok: false as const, error: await errorFromResponse(resp) }
         }
         // 舊 Worker（或 OpenAI fallback）回 JSON — 自動走舊格式
         const contentType = resp.headers.get('Content-Type') ?? ''
@@ -449,12 +552,7 @@ export function createTransport(
           signal: ctrl.signal,
         })
         if (!resp.ok) {
-          try {
-            const j = (await resp.json()) as { error?: string }
-            return { ok: false as const, error: j.error ?? `Worker HTTP ${resp.status}` }
-          } catch {
-            return { ok: false as const, error: `Worker HTTP ${resp.status}` }
-          }
+          return { ok: false as const, error: await errorFromResponse(resp) }
         }
         if (!resp.body) return { ok: false as const, error: 'no response body' }
         const reader = resp.body.getReader()
